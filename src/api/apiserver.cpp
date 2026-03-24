@@ -2,7 +2,9 @@
 #include "api/httplib.h"
 
 #include "control/controlproxy.h"
+#include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
+#include "track/track.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -57,6 +59,129 @@ double ApiServer::getControl(const QString& group, const QString& key) {
 void ApiServer::setControl(const QString& group, const QString& key, double value) {
     ControlProxy proxy(ConfigKey(group, key));
     proxy.set(value);
+}
+
+QJsonObject ApiServer::getTrackInfo(int deck) {
+    QJsonObject result;
+    if (!m_pPlayerManager) {
+        return result;
+    }
+
+    // PlayerManager and Track objects live on the main thread.
+    // Use BlockingQueuedConnection to safely read from the API thread.
+    QMetaObject::invokeMethod(
+            qApp,
+            [this, deck, &result]() {
+                QString group = deckGroup(deck);
+                BaseTrackPlayer* pPlayer = m_pPlayerManager->getPlayer(group);
+                if (!pPlayer) {
+                    return;
+                }
+                TrackPointer pTrack = pPlayer->getLoadedTrack();
+                if (!pTrack) {
+                    return;
+                }
+
+                result["title"] = pTrack->getTitle();
+                result["artist"] = pTrack->getArtist();
+                result["album"] = pTrack->getAlbum();
+                result["album_artist"] = pTrack->getAlbumArtist();
+                result["genre"] = pTrack->getGenre();
+                result["composer"] = pTrack->getComposer();
+                result["comment"] = pTrack->getComment();
+                result["year"] = pTrack->getYear();
+                result["track_number"] = pTrack->getTrackNumber();
+                result["bpm"] = pTrack->getBpm();
+                result["key"] = pTrack->getKeyText();
+                result["duration"] = pTrack->getDuration();
+                result["duration_text"] = pTrack->getDurationTextSeconds();
+                result["bitrate"] = pTrack->getBitrate();
+                result["sample_rate"] = static_cast<int>(pTrack->getSampleRate().value());
+                result["channels"] = static_cast<int>(pTrack->getChannels().value());
+                result["file_path"] = pTrack->getLocation();
+                result["file_type"] = pTrack->getType();
+                result["rating"] = pTrack->getRating();
+                result["times_played"] = pTrack->getTimesPlayed();
+                result["bpm_locked"] = pTrack->isBpmLocked();
+
+                // Beat grid info
+                auto pBeats = pTrack->getBeats();
+                if (pBeats) {
+                    QJsonObject beatsObj;
+                    beatsObj["has_beats"] = true;
+                    beatsObj["constant_tempo"] = pBeats->hasConstantTempo();
+
+                    // First beat position (in frames)
+                    auto firstBeat = pBeats->firstBeat();
+                    if (firstBeat.isValid()) {
+                        beatsObj["first_beat_frame"] = firstBeat.value();
+                    }
+
+                    result["beats"] = beatsObj;
+                } else {
+                    QJsonObject beatsObj;
+                    beatsObj["has_beats"] = false;
+                    result["beats"] = beatsObj;
+                }
+
+                // Waveform summary info
+                auto pWaveform = pTrack->getWaveformSummary();
+                if (pWaveform) {
+                    QJsonObject waveObj;
+                    waveObj["has_waveform"] = true;
+                    waveObj["data_size"] = pWaveform->getDataSize();
+                    waveObj["texture_size"] = pWaveform->getTextureSize();
+
+                    // Downsample waveform to ~200 points for API consumption
+                    int dataSize = pWaveform->getDataSize();
+                    if (dataSize > 0) {
+                        int targetPoints = 200;
+                        int step = std::max(1, dataSize / targetPoints);
+                        QJsonArray lowArr, midArr, highArr;
+                        for (int i = 0; i < dataSize; i += step) {
+                            lowArr.append(static_cast<int>(pWaveform->getLow(i)));
+                            midArr.append(static_cast<int>(pWaveform->getMid(i)));
+                            highArr.append(static_cast<int>(pWaveform->getHigh(i)));
+                        }
+                        waveObj["low"] = lowArr;
+                        waveObj["mid"] = midArr;
+                        waveObj["high"] = highArr;
+                    }
+
+                    result["waveform_summary"] = waveObj;
+                } else {
+                    QJsonObject waveObj;
+                    waveObj["has_waveform"] = false;
+                    result["waveform_summary"] = waveObj;
+                }
+
+                // Cue points
+                auto cues = pTrack->getCuePoints();
+                if (!cues.isEmpty()) {
+                    QJsonArray cueArr;
+                    for (const auto& cue : cues) {
+                        QJsonObject cueObj;
+                        cueObj["type"] = static_cast<int>(cue->getType());
+                        cueObj["hotcue_index"] = cue->getHotCue();
+                        auto startPos = cue->getPosition();
+                        if (startPos.isValid()) {
+                            cueObj["position_frames"] = startPos.value();
+                        }
+                        auto endPos = cue->getEndPosition();
+                        if (endPos.isValid()) {
+                            cueObj["end_position_frames"] = endPos.value();
+                        }
+                        cueObj["label"] = cue->getLabel();
+                        auto color = cue->getColor();
+                        cueObj["color"] = static_cast<double>(static_cast<QRgb>(color));
+                        cueArr.append(cueObj);
+                    }
+                    result["cue_points"] = cueArr;
+                }
+            },
+            Qt::BlockingQueuedConnection);
+
+    return result;
 }
 
 void ApiServer::start() {
@@ -170,6 +295,29 @@ void ApiServer::run() {
                 {"orientation", getControl(g, "orientation")},
                 {"waveform_zoom", getControl(g, "waveform_zoom")},
         };
+        res.set_content(toJson(info), "application/json");
+    });
+
+    // ════════════════════════════════════════════════════════════════
+    // TRACK INFO — metadata, beats, waveform, cues from Track object
+    // ════════════════════════════════════════════════════════════════
+
+    svr.Get("/api/deck/(\\d+)/track_info", [this](const httplib::Request& req, httplib::Response& res) {
+        int d = std::stoi(req.matches[1]);
+        QString g = deckGroup(d);
+
+        if (getControl(g, "track_loaded") < 0.5) {
+            res.set_content(toJson(jsonError("No track loaded on deck " + QString::number(d))), "application/json");
+            return;
+        }
+
+        QJsonObject info = getTrackInfo(d);
+        if (info.isEmpty()) {
+            res.set_content(toJson(jsonError("Could not read track info from deck " + QString::number(d))), "application/json");
+            return;
+        }
+
+        info["deck"] = d;
         res.set_content(toJson(info), "application/json");
     });
 

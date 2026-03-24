@@ -29,6 +29,7 @@ class ApiServer : public QObject {
     double getControl(const QString& group, const QString& key);
     void setControl(const QString& group, const QString& key, double value);
     QString deckGroup(int deck);
+    QJsonObject getTrackInfo(int deck);
 
     int m_port;
     PlayerManager* m_pPlayerManager;
