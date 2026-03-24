@@ -1,0 +1,239 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MixxxMIDIPreset schemaVersion="1" mixxxVersion="2.7.0">
+  <info>
+    <name>DJ Treta Virtual Controller</name>
+    <author>DJ Treta AI</author>
+    <description>Virtual MIDI controller for AI-driven DJ control. Works with python-rtmidi virtual port.</description>
+  </info>
+  <controller id="DJ Treta AI">
+    <controls>
+
+      <!-- ═══ MASTER ═══ -->
+      <control>
+        <group>[Master]</group>
+        <key>crossfader</key>
+        <status>0xB0</status>
+        <midino>10</midino>
+      </control>
+      <control>
+        <group>[Master]</group>
+        <key>volume</key>
+        <status>0xB0</status>
+        <midino>11</midino>
+      </control>
+      <control>
+        <group>[Master]</group>
+        <key>headVolume</key>
+        <status>0xB0</status>
+        <midino>12</midino>
+      </control>
+
+      <!-- ═══ DECK 1 (Channel 1) ═══ -->
+      <control>
+        <group>[Channel1]</group>
+        <key>volume</key>
+        <status>0xB0</status>
+        <midino>7</midino>
+      </control>
+      <control>
+        <group>[Channel1]</group>
+        <key>rate</key>
+        <status>0xB0</status>
+        <midino>8</midino>
+      </control>
+      <control>
+        <group>[QuickEffectRack1_[Channel1]]</group>
+        <key>super1</key>
+        <status>0xB0</status>
+        <midino>19</midino>
+      </control>
+
+      <!-- Deck 1 EQ -->
+      <control>
+        <group>[EqualizerRack1_[Channel1]_Effect1]</group>
+        <key>parameter1</key>
+        <description>EQ Low</description>
+        <status>0xB0</status>
+        <midino>16</midino>
+      </control>
+      <control>
+        <group>[EqualizerRack1_[Channel1]_Effect1]</group>
+        <key>parameter2</key>
+        <description>EQ Mid</description>
+        <status>0xB0</status>
+        <midino>17</midino>
+      </control>
+      <control>
+        <group>[EqualizerRack1_[Channel1]_Effect1]</group>
+        <key>parameter3</key>
+        <description>EQ High</description>
+        <status>0xB0</status>
+        <midino>18</midino>
+      </control>
+
+      <!-- Deck 1 Buttons (Note On, Ch1) -->
+      <control>
+        <group>[Channel1]</group>
+        <key>play</key>
+        <status>0x90</status>
+        <midino>1</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel1]</group>
+        <key>cue_default</key>
+        <status>0x90</status>
+        <midino>2</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel1]</group>
+        <key>sync_enabled</key>
+        <status>0x90</status>
+        <midino>3</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel1]</group>
+        <key>reloop_toggle</key>
+        <status>0x90</status>
+        <midino>4</midino>
+        <options><button/></options>
+      </control>
+
+      <!-- Deck 1 Hot Cues -->
+      <control>
+        <group>[Channel1]</group>
+        <key>hotcue_1_activate</key>
+        <status>0x90</status>
+        <midino>5</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel1]</group>
+        <key>hotcue_2_activate</key>
+        <status>0x90</status>
+        <midino>6</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel1]</group>
+        <key>hotcue_3_activate</key>
+        <status>0x90</status>
+        <midino>7</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel1]</group>
+        <key>hotcue_4_activate</key>
+        <status>0x90</status>
+        <midino>8</midino>
+        <options><button/></options>
+      </control>
+
+      <!-- ═══ DECK 2 (Channel 2) ═══ -->
+      <control>
+        <group>[Channel2]</group>
+        <key>volume</key>
+        <status>0xB1</status>
+        <midino>7</midino>
+      </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>rate</key>
+        <status>0xB1</status>
+        <midino>8</midino>
+      </control>
+      <control>
+        <group>[QuickEffectRack1_[Channel2]]</group>
+        <key>super1</key>
+        <status>0xB1</status>
+        <midino>19</midino>
+      </control>
+
+      <!-- Deck 2 EQ -->
+      <control>
+        <group>[EqualizerRack1_[Channel2]_Effect1]</group>
+        <key>parameter1</key>
+        <description>EQ Low</description>
+        <status>0xB1</status>
+        <midino>16</midino>
+      </control>
+      <control>
+        <group>[EqualizerRack1_[Channel2]_Effect1]</group>
+        <key>parameter2</key>
+        <description>EQ Mid</description>
+        <status>0xB1</status>
+        <midino>17</midino>
+      </control>
+      <control>
+        <group>[EqualizerRack1_[Channel2]_Effect1]</group>
+        <key>parameter3</key>
+        <description>EQ High</description>
+        <status>0xB1</status>
+        <midino>18</midino>
+      </control>
+
+      <!-- Deck 2 Buttons (Note On, Ch2) -->
+      <control>
+        <group>[Channel2]</group>
+        <key>play</key>
+        <status>0x91</status>
+        <midino>1</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>cue_default</key>
+        <status>0x91</status>
+        <midino>2</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>sync_enabled</key>
+        <status>0x91</status>
+        <midino>3</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>reloop_toggle</key>
+        <status>0x91</status>
+        <midino>4</midino>
+        <options><button/></options>
+      </control>
+
+      <!-- Deck 2 Hot Cues -->
+      <control>
+        <group>[Channel2]</group>
+        <key>hotcue_1_activate</key>
+        <status>0x91</status>
+        <midino>5</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>hotcue_2_activate</key>
+        <status>0x91</status>
+        <midino>6</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>hotcue_3_activate</key>
+        <status>0x91</status>
+        <midino>7</midino>
+        <options><button/></options>
+      </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>hotcue_4_activate</key>
+        <status>0x91</status>
+        <midino>8</midino>
+        <options><button/></options>
+      </control>
+
+    </controls>
+  </controller>
+</MixxxMIDIPreset>

@@ -1,5 +1,7 @@
 #include "coreservices.h"
 
+#include "api/apiserver.h"
+
 #include <QApplication>
 #include <QFileDialog>
 #include <QProcess>
@@ -764,6 +766,10 @@ void CoreServices::initialize(QApplication* pApp) {
             m_pPlayerManager->slotLoadToDeck(musicFiles.at(i), i + 1);
         }
     }
+
+    // Start DJ Treta HTTP API server with full access to PlayerManager
+    m_pApiServer = std::make_unique<ApiServer>(7778, m_pPlayerManager.get());
+    m_pApiServer->start();
 
     m_isInitialized = true;
 

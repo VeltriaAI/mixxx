@@ -1237,6 +1237,7 @@ add_library(
   src/controllers/scripting/legacy/scriptconnection.cpp
   src/controllers/scripting/legacy/scriptconnectionjsproxy.cpp
   src/controllers/softtakeover.cpp
+  src/api/apiserver.cpp
   src/coreservices.cpp
   src/database/mixxxdb.cpp
   src/database/schemamanager.cpp
