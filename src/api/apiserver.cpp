@@ -7,6 +7,7 @@
 #include "track/track.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <thread>
@@ -215,6 +216,37 @@ void ApiServer::run() {
             {"Access-Control-Allow-Headers", "Content-Type"},
     });
     svr.Options(".*", [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
+
+    // ════════════════════════════════════════════════════════════════
+    // LIVE — Real-time audio state for the Listening Engine (polled at 10Hz)
+    // ════════════════════════════════════════════════════════════════
+
+    svr.Get("/api/live", [this](const httplib::Request&, httplib::Response& res) {
+        auto deckLive = [this](int d) -> QJsonObject {
+            QString g = deckGroup(d);
+            return QJsonObject{
+                {"playing", getControl(g, "play") > 0.5},
+                {"bpm", getControl(g, "bpm")},
+                {"beat_active", getControl(g, "beat_active") > 0.5},
+                {"beat_distance", getControl(g, "beat_distance")},
+                {"playposition", getControl(g, "playposition")},
+                {"volume", getControl(g, "volume")},
+                {"vu_left", getControl(g, "VuMeterL")},
+                {"vu_right", getControl(g, "VuMeterR")},
+                {"peak_indicator", getControl(g, "PeakIndicator") > 0.5},
+            };
+        };
+
+        QJsonObject live{
+            {"timestamp", static_cast<qint64>(QDateTime::currentMSecsSinceEpoch())},
+            {"crossfader", getControl("[Master]", "crossfader")},
+            {"master_vu_left", getControl("[Master]", "VuMeterL")},
+            {"master_vu_right", getControl("[Master]", "VuMeterR")},
+            {"deck1", deckLive(1)},
+            {"deck2", deckLive(2)},
+        };
+        res.set_content(toJson(live), "application/json");
+    });
 
     // ════════════════════════════════════════════════════════════════
     // STATUS
