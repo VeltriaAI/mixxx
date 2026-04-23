@@ -129,7 +129,7 @@ QJsonObject ApiServer::getTrackInfo(int deck) {
                     result["beats"] = beatsObj;
                 }
 
-                // Waveform summary — downsampled to ~200 points
+                // Waveform summary — all points, no downsampling
                 auto pWaveform = pTrack->getWaveformSummary();
                 if (pWaveform) {
                     QJsonObject waveObj;
@@ -139,8 +139,7 @@ QJsonObject ApiServer::getTrackInfo(int deck) {
 
                     int dataSize = pWaveform->getDataSize();
                     if (dataSize > 0) {
-                        int targetPoints = 200;
-                        int step = std::max(1, dataSize / targetPoints);
+                        int step = 1; // all points
                         QJsonArray lowArr, midArr, highArr;
                         for (int i = 0; i < dataSize; i += step) {
                             lowArr.append(static_cast<int>(pWaveform->getLow(i)));
