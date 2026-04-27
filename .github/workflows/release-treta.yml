@@ -40,12 +40,20 @@ jobs:
 
   release:
     needs: build
+    # Run even if some matrix entries failed — Flatpak / Android /
+    # Windows-2022 are flaky and we don't ship them. As long as the
+    # three artifacts we DO ship (Ubuntu DEB, macOS Intel DMG, macOS
+    # ARM DMG) made it to actions/upload-artifact, the release goes out.
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v7
         with:
           path: artifacts
+          # Don't fail if some artifacts are missing (a flaky job
+          # might not have uploaded its bundle).
+          merge-multiple: false
 
       - name: List downloaded artifacts
         run: |
