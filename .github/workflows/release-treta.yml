@@ -55,10 +55,34 @@ jobs:
           # might not have uploaded its bundle).
           merge-multiple: false
 
-      - name: List downloaded artifacts
+      - name: Rename DMGs by arch — they collide on basename
+        # CPack on macOS produces `mixxx-<version>-macos.dmg` regardless
+        # of arch, so the arm64 and x64 jobs upload identically-named
+        # artifacts into different artifact directories. Without
+        # renaming, softprops/action-gh-release sees two files with
+        # the same destination name and the second overwrites the first.
         run: |
-          ls -la artifacts/
-          find artifacts -type f \( -name '*.dmg' -o -name '*.deb' \) -print
+          set -eux
+          mkdir -p out
+          # Linux DEB — passed through as-is
+          if compgen -G "artifacts/Ubuntu 24.04 Qt6 DEB/*.deb" >/dev/null; then
+            cp artifacts/Ubuntu\ 24.04\ Qt6\ DEB/*.deb out/
+          fi
+          # macOS arm64 DMG → -macos-arm64.dmg
+          if compgen -G "artifacts/macOS ARM DMG/*.dmg" >/dev/null; then
+            for f in artifacts/macOS\ ARM\ DMG/*.dmg; do
+              base=$(basename "$f" .dmg)
+              cp "$f" "out/${base}-arm64.dmg"
+            done
+          fi
+          # macOS x64 DMG → -macos-x64.dmg
+          if compgen -G "artifacts/macOS Intel DMG/*.dmg" >/dev/null; then
+            for f in artifacts/macOS\ Intel\ DMG/*.dmg; do
+              base=$(basename "$f" .dmg)
+              cp "$f" "out/${base}-x64.dmg"
+            done
+          fi
+          ls -la out/
 
       - name: Create / update GitHub Release with artifacts
         uses: softprops/action-gh-release@v2
@@ -68,5 +92,5 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: false
           files: |
-            artifacts/**/*.dmg
-            artifacts/**/*.deb
+            out/*.deb
+            out/*.dmg
