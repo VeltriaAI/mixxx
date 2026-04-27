@@ -1,0 +1,64 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow
+#
+# Treta-fork release workflow.
+#
+# Calls the existing build.yml with `publish: false` (so it skips Azure /
+# Hostgator / codesign / notarization paths that require upstream-Mixxx
+# secrets we don't carry on the VeltriaAI fork) and uploads the resulting
+# artifacts to a GitHub Release on the current tag.
+#
+# Triggers on `v*-treta-*` tags or manual dispatch. Leaves upstream's
+# release.yml untouched so we can keep merging upstream cleanly.
+#
+# Artifacts published (v1):
+#   - Ubuntu 24.04 Qt6 DEB         (Linux x64; install.sh extracts via dpkg-deb -x)
+#   - macOS Intel DMG              (Mac x64)
+#   - macOS ARM DMG                (Mac arm64)
+# Windows + Android are built by build.yml but not promoted to releases yet.
+
+name: Release (Treta)
+
+on:
+  push:
+    tags:
+      - "v*-treta-*"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required to create the release
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      publish: false
+      branch: ${{ github.head_ref || github.ref_name }}
+      ref: ${{ github.ref }}
+    # No secrets passed — `publish: false` short-circuits every step that
+    # needs them. If a step still references a secret, it'll be empty
+    # and the conditional gate (`if: inputs.publish && …`) skips it.
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: |
+          ls -la artifacts/
+          find artifacts -type f \( -name '*.dmg' -o -name '*.deb' \) -print
+
+      - name: Create / update GitHub Release with artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.deb
