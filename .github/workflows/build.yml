@@ -230,16 +230,18 @@ jobs:
         run: git fetch origin --force --tags
 
       - name: "[macOS] Set up cmake"
-        uses: jwlawson/actions-setup-cmake@v2.2
-        # Ubuntu 24.04 should use the CMake version from the repos.
+        # jwlawson/actions-setup-cmake's catalogue is broken in
+        # April 2026 — both 3.21.x and 3.30.x come back as
+        # "Unable to find version matching …". macos-15 runners
+        # ship cmake out of the box (Homebrew preinstalled), and
+        # Mixxx's CMakeLists.txt only requires 3.21+, so just use
+        # the system one.
         if: runner.os == 'macOS'
-        with:
-          # cmake 3.21.x (CMakeLists.txt minimum) is no longer
-          # available from this action's catalogue — `Unable to find
-          # version matching 3.21.x` from runs ≥ April 2026. Bumped
-          # to 3.30.x (matches Windows 2022 above; safely above the
-          # 3.21 floor in CMakeLists.txt).
-          cmake-version: "3.30.x"
+        run: |
+          cmake --version
+          # Bail early with a clear error if it's somehow missing.
+          command -v cmake >/dev/null \
+            || (echo "::error::cmake not found on runner — check macOS image" && exit 1)
 
       - name: "[Windows] Set up cmake"
         uses: jwlawson/actions-setup-cmake@v2.2
