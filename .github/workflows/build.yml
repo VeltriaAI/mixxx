@@ -234,9 +234,12 @@ jobs:
         # Ubuntu 24.04 should use the CMake version from the repos.
         if: runner.os == 'macOS'
         with:
-          # This should always match the minimum required version in
-          # our CMakeLists.txt
-          cmake-version: "3.21.x"
+          # cmake 3.21.x (CMakeLists.txt minimum) is no longer
+          # available from this action's catalogue — `Unable to find
+          # version matching 3.21.x` from runs ≥ April 2026. Bumped
+          # to 3.30.x (matches Windows 2022 above; safely above the
+          # 3.21 floor in CMakeLists.txt).
+          cmake-version: "3.30.x"
 
       - name: "[Windows] Set up cmake"
         uses: jwlawson/actions-setup-cmake@v2.2
