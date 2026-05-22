@@ -4,21 +4,19 @@
 #include <utility>
 #include <vector>
 
-#include <QAbstractItemView>
 #include <QCompleter>
 #include <QDateTime>
 #include <QHBoxLayout>
-#include <QJsonArray>
 #include <QJsonDocument>
-#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
-#include <QStandardItem>
-#include <QStandardItemModel>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QStandardItem>
+#include <QStandardItemModel>
+#include <QTabWidget>
 #include <QTextBrowser>
 #include <QTimer>
 #include <QUrl>
@@ -30,7 +28,6 @@ namespace {
 const QString kBase = QStringLiteral("http://127.0.0.1:7779");
 constexpr int kPollMs = 1500;
 
-// Slash commands offered in the chat (Claude-Code-style popup on "/").
 struct SlashCmd {
     const char* name;
     const char* desc;
@@ -42,71 +39,201 @@ const SlashCmd kSlashCmds[] = {
         {"/mood", "Change mood / genre   (e.g. /mood deep)"},
         {"/accept", "Fire Treta's transition suggestion"},
         {"/reject", "Drop her suggestion + reshape"},
+        {"/like", "👍 the current track"},
+        {"/dislike", "👎 the current track"},
 };
+
+QString esc(QString s) {
+    return s.toHtmlEscaped();
+}
+
+QString bubbleHtml(bool mine, const QString& who, QString content) {
+    content = esc(content);
+    content.replace(QStringLiteral("\n"), QStringLiteral("<br>"));
+    const QString align = mine ? QStringLiteral("right") : QStringLiteral("left");
+    const QString bg = mine ? QStringLiteral("#2D6FE0") : QStringLiteral("#26302B");
+    const QString nameColor = mine ? QStringLiteral("#BCD8FF") : QStringLiteral("#85C85B");
+    return QStringLiteral(
+            "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
+            "<td align='%1'>"
+            "<table cellspacing='0' cellpadding='8' style='max-width:560px;'>"
+            "<tr><td bgcolor='%2' style='color:#F2F2F2; font-size:13px;'>"
+            "<span style='color:%3; font-weight:bold; font-size:11px;'>%4</span><br>%5"
+            "</td></tr></table></td></tr></table>"
+            "<table cellspacing='0' cellpadding='2'><tr><td>&nbsp;</td></tr></table>")
+            .arg(align, bg, nameColor, who, content);
+}
+
+QString toolLineHtml(const QJsonObject& a) {
+    QString args = a.value(QStringLiteral("args")).toString();
+    if (args.size() > 90) {
+        args = args.left(87) + QStringLiteral("…");
+    }
+    return QStringLiteral(
+            "<div style='color:#7FB0E8; font-size:11px; margin:1px 0 1px 6px;'>"
+            "🔧 %1(%2)</div>")
+            .arg(esc(a.value(QStringLiteral("tool")).toString()), esc(args));
+}
+
+// Block-char energy sparkline from a list of {e:energy(0-10)} objects.
+QString sparkline(const QJsonArray& arc) {
+    static const QChar kBlocks[] = {
+            u' ', u'▁', u'▂', u'▃', u'▄', u'▅', u'▆', u'▇', u'█'};
+    QString out;
+    for (const QJsonValue& v : arc) {
+        double e = v.toObject().value(QStringLiteral("e")).toDouble();
+        int idx = std::clamp(static_cast<int>(e / 10.0 * 8.0), 0, 8);
+        QString color = e < 4 ? QStringLiteral("#2D9CDB")
+                : e < 6       ? QStringLiteral("#85C85B")
+                : e < 8       ? QStringLiteral("#E0A030")
+                              : QStringLiteral("#E05050");
+        out += QStringLiteral("<span style='color:%1;'>%2</span>")
+                       .arg(color, QString(kBlocks[idx]));
+    }
+    return out;
+}
+
+// Which log tab(s) a line belongs to (keyword classifier, ported from the TUI).
+bool inDj(const QString& t) {
+    return t.contains("transition", Qt::CaseInsensitive) ||
+            t.contains("deck", Qt::CaseInsensitive) ||
+            t.contains("crossfad", Qt::CaseInsensitive) ||
+            t.contains("auto-transition", Qt::CaseInsensitive) ||
+            t.contains("emergency", Qt::CaseInsensitive);
+}
+bool inPlanner(const QString& t) {
+    return t.contains("planner", Qt::CaseInsensitive) ||
+            t.contains("playlist", Qt::CaseInsensitive) ||
+            t.contains("candidate", Qt::CaseInsensitive) ||
+            t.contains("knowledge", Qt::CaseInsensitive);
+}
+bool inLibrary(const QString& t) {
+    return t.contains("download", Qt::CaseInsensitive) ||
+            t.contains("enrich", Qt::CaseInsensitive) ||
+            t.contains("library", Qt::CaseInsensitive) ||
+            t.contains("generat", Qt::CaseInsensitive) ||
+            t.contains("producer", Qt::CaseInsensitive);
+}
+bool inIssues(const QString& t) {
+    return t.contains("error", Qt::CaseInsensitive) ||
+            t.contains("warn", Qt::CaseInsensitive) ||
+            t.contains("fail", Qt::CaseInsensitive) ||
+            t.contains("❌") || t.contains("⚠");
+}
+
+QString logLineHtml(const QString& text) {
+    const QString color = inIssues(text) ? QStringLiteral("#E08080")
+                                          : QStringLiteral("#AAA");
+    return QStringLiteral("<div style='color:%1; font-size:11px; margin:1px 0;'>%2</div>")
+            .arg(color, esc(text));
+}
 } // anonymous namespace
+
+QString DlgDJTretaChat::base() const {
+    return kBase;
+}
 
 DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
         : QWidget(parent),
           m_pStatus(new QLabel(this)),
           m_pAgents(new QLabel(this)),
-          m_pLog(new QTextBrowser(this)),
+          m_pTabs(new QTabWidget(this)),
+          m_pChat(new QTextBrowser(this)),
+          m_pActivity(new QTextBrowser(this)),
+          m_pSet(new QTextBrowser(this)),
+          m_pDj(new QTextBrowser(this)),
+          m_pPlanner(new QTextBrowser(this)),
+          m_pLibrary(new QTextBrowser(this)),
+          m_pReflect(new QTextBrowser(this)),
+          m_pIssues(new QTextBrowser(this)),
           m_pInput(new QLineEdit(this)),
-          m_pPollTimer(new QTimer(this)),
-          m_base(kBase) {
+          m_pPollTimer(new QTimer(this)) {
     m_pStatus->setTextFormat(Qt::RichText);
     m_pStatus->setText(tr("DJ Treta — connecting…"));
     m_pAgents->setTextFormat(Qt::RichText);
     m_pAgents->setObjectName(QStringLiteral("agents"));
-    m_pLog->setOpenExternalLinks(false);
-    m_pLog->setFrameShape(QFrame::NoFrame);
+
+    const auto setupBrowser = [](QTextBrowser* b) {
+        b->setOpenExternalLinks(false);
+        b->setFrameShape(QFrame::NoFrame);
+    };
+    for (QTextBrowser* b : {m_pChat, m_pActivity, m_pSet, m_pDj, m_pPlanner,
+                 m_pLibrary, m_pReflect, m_pIssues}) {
+        setupBrowser(b);
+    }
+    m_pTabs->addTab(m_pChat, tr("Chat"));
+    m_pTabs->addTab(m_pActivity, tr("Activity"));
+    m_pTabs->addTab(m_pSet, tr("Set"));
+    m_pTabs->addTab(m_pDj, tr("DJ"));
+    m_pTabs->addTab(m_pPlanner, tr("Planner"));
+    m_pTabs->addTab(m_pLibrary, tr("Library"));
+    m_pTabs->addTab(m_pReflect, tr("Reflect"));
+    m_pTabs->addTab(m_pIssues, tr("Issues"));
+
     m_pInput->setPlaceholderText(tr("Talk to DJ Treta…  (/ for commands)"));
 
     auto* pSend = new QPushButton(tr("Send"), this);
-
-    // Dark, themed chrome to match the LateNight skin (the bubbles themselves
-    // are themed in renderTurns).
-    setStyleSheet(QStringLiteral(
-            "QWidget { background: #161616; }"
-            "QLabel { background: #1E1E1E; border: 1px solid #2A2A2A;"
-            "  border-radius: 8px; padding: 7px 12px; color: #ECECEC; }"
-            "QLabel#agents { background: transparent; border: none;"
-            "  padding: 0 6px; }"
-            "QTextBrowser { background: #161616; border: none; }"
-            "QLineEdit {"
-            "  background: #232323; color: #ECECEC; border: 1px solid #333;"
-            "  border-radius: 14px; padding: 7px 12px; font-size: 13px; }"
-            "QLineEdit:focus { border: 1px solid #2D6FE0; }"
-            "QPushButton {"
-            "  background: #2D6FE0; color: white; border: none;"
-            "  border-radius: 14px; padding: 7px 18px; font-weight: bold; }"
-            "QPushButton:hover { background: #3a82ff; }"
-            "QPushButton:pressed { background: #1f57b8; }"));
+    auto* pSkip = new QPushButton(tr("Skip"), this);
+    auto* pLike = new QPushButton(QStringLiteral("👍"), this);
+    auto* pDislike = new QPushButton(QStringLiteral("👎"), this);
+    auto* pDoIt = new QPushButton(tr("Do it"), this);
+    auto* pNo = new QPushButton(tr("No"), this);
+    for (QPushButton* b : {pSkip, pLike, pDislike, pDoIt, pNo}) {
+        b->setObjectName(QStringLiteral("action"));
+    }
 
     auto* pInputRow = new QHBoxLayout();
     pInputRow->addWidget(m_pInput, 1);
-    pInputRow->addWidget(pSend, 0);
+    pInputRow->addWidget(pSend);
+    pInputRow->addWidget(pSkip);
+    pInputRow->addWidget(pLike);
+    pInputRow->addWidget(pDislike);
+    pInputRow->addWidget(pDoIt);
+    pInputRow->addWidget(pNo);
 
     auto* pLayout = new QVBoxLayout(this);
     pLayout->setContentsMargins(8, 8, 8, 8);
     pLayout->setSpacing(6);
     pLayout->addWidget(m_pStatus, 0);
     pLayout->addWidget(m_pAgents, 0);
-    pLayout->addWidget(m_pLog, 1);
+    pLayout->addWidget(m_pTabs, 1);
     pLayout->addLayout(pInputRow, 0);
     setLayout(pLayout);
 
+    setStyleSheet(QStringLiteral(
+            "QWidget { background: #161616; }"
+            "QLabel { background: #1E1E1E; border: 1px solid #2A2A2A;"
+            "  border-radius: 8px; padding: 7px 12px; color: #ECECEC; }"
+            "QLabel#agents { background: transparent; border: none; padding: 0 6px; }"
+            "QTextBrowser { background: #161616; border: none; }"
+            "QTabWidget::pane { border: 1px solid #2A2A2A; border-radius: 6px; }"
+            "QTabBar::tab { background: #1E1E1E; color: #AAA; padding: 5px 12px;"
+            "  border: 1px solid #2A2A2A; border-bottom: none;"
+            "  border-top-left-radius: 6px; border-top-right-radius: 6px; }"
+            "QTabBar::tab:selected { background: #2D6FE0; color: white; }"
+            "QLineEdit { background: #232323; color: #ECECEC; border: 1px solid #333;"
+            "  border-radius: 14px; padding: 7px 12px; font-size: 13px; }"
+            "QLineEdit:focus { border: 1px solid #2D6FE0; }"
+            "QPushButton { background: #2D6FE0; color: white; border: none;"
+            "  border-radius: 14px; padding: 7px 14px; font-weight: bold; }"
+            "QPushButton#action { background: #2A2A2A; color: #DDD; padding: 7px 10px; }"
+            "QPushButton:hover { background: #3a82ff; }"
+            "QPushButton#action:hover { background: #383838; }"));
+
     connect(m_pInput, &QLineEdit::returnPressed, this, &DlgDJTretaChat::sendMessage);
     connect(pSend, &QPushButton::clicked, this, &DlgDJTretaChat::sendMessage);
-    connect(m_pPollTimer, &QTimer::timeout, this, &DlgDJTretaChat::pollChat);
+    connect(pSkip, &QPushButton::clicked, this, &DlgDJTretaChat::onSkip);
+    connect(pLike, &QPushButton::clicked, this, &DlgDJTretaChat::onLike);
+    connect(pDislike, &QPushButton::clicked, this, &DlgDJTretaChat::onDislike);
+    connect(pDoIt, &QPushButton::clicked, this, &DlgDJTretaChat::onDoIt);
+    connect(pNo, &QPushButton::clicked, this, &DlgDJTretaChat::onNo);
+    connect(m_pPollTimer, &QTimer::timeout, this, &DlgDJTretaChat::poll);
     connect(&m_net, &QNetworkAccessManager::finished, this, &DlgDJTretaChat::onReply);
 
     setupCommandCompleter();
 }
 
 void DlgDJTretaChat::setupCommandCompleter() {
-    // Popup of slash commands shown as you type "/". The popup DISPLAYS
-    // "/cmd — description" but the completion that gets inserted is just
-    // "/cmd " (EditRole) — like Claude Code's slash menu.
     auto* pModel = new QStandardItemModel(this);
     for (const auto& c : kSlashCmds) {
         auto* pItem = new QStandardItem();
@@ -114,11 +241,12 @@ void DlgDJTretaChat::setupCommandCompleter() {
                                .arg(QString::fromLatin1(c.name),
                                        QString::fromLatin1(c.desc)),
                 Qt::DisplayRole);
-        pItem->setData(QString(QString::fromLatin1(c.name) + QStringLiteral(" ")), Qt::EditRole);
+        pItem->setData(QString(QString::fromLatin1(c.name) + QStringLiteral(" ")),
+                Qt::EditRole);
         pModel->appendRow(pItem);
     }
     m_pCompleter = new QCompleter(pModel, this);
-    m_pCompleter->setCompletionRole(Qt::EditRole);  // match + insert "/cmd "
+    m_pCompleter->setCompletionRole(Qt::EditRole);
     m_pCompleter->setCaseSensitivity(Qt::CaseInsensitive);
     m_pCompleter->setFilterMode(Qt::MatchStartsWith);
     m_pCompleter->setCompletionMode(QCompleter::PopupCompletion);
@@ -126,7 +254,7 @@ void DlgDJTretaChat::setupCommandCompleter() {
 }
 
 void DlgDJTretaChat::onShow() {
-    pollChat();
+    poll();
     m_pPollTimer->start(kPollMs);
 }
 
@@ -148,47 +276,70 @@ void DlgDJTretaChat::sendMessage() {
         handleSlashCommand(text);
         return;
     }
-    const QString url = m_base + QStringLiteral("/http/talk?msg=") +
-            QString::fromUtf8(QUrl::toPercentEncoding(text));
-    m_net.get(QNetworkRequest(QUrl(url)));
-    // Optimistic: show the message + a "typing…" bubble now. The daemon only
-    // writes the turn to the JSONL once Treta has replied, so we'd otherwise
-    // stare at nothing for several seconds.
+    m_net.get(QNetworkRequest(QUrl(base() + QStringLiteral("/http/talk?msg=") +
+            QString::fromUtf8(QUrl::toPercentEncoding(text)))));
     m_pendingUserMsg = text;
-    rebuild();
-    QTimer::singleShot(1200, this, &DlgDJTretaChat::pollChat);
+    renderChat();
+    QTimer::singleShot(1200, this, &DlgDJTretaChat::poll);
+}
+
+void DlgDJTretaChat::sendCommand(const QString& cmd, const QString& extraQuery) {
+    QString url = base() + QStringLiteral("/http/command?cmd=") + cmd;
+    if (!extraQuery.isEmpty()) {
+        url += extraQuery;
+    }
+    m_net.get(QNetworkRequest(QUrl(url)));
+    QTimer::singleShot(500, this, &DlgDJTretaChat::poll);
 }
 
 bool DlgDJTretaChat::handleSlashCommand(const QString& text) {
     const QString cmd = text.section(' ', 0, 0);
     const QString rest = text.section(' ', 1).trimmed();
-    QString url;
     if (cmd == QStringLiteral("/auto")) {
-        url = m_base + QStringLiteral("/http/command?cmd=set_mode&mode=autonomous");
+        sendCommand(QStringLiteral("set_mode"), QStringLiteral("&mode=autonomous"));
     } else if (cmd == QStringLiteral("/sarathi")) {
-        url = m_base + QStringLiteral("/http/command?cmd=set_mode&mode=sarathi");
+        sendCommand(QStringLiteral("set_mode"), QStringLiteral("&mode=sarathi"));
     } else if (cmd == QStringLiteral("/skip")) {
-        url = m_base + QStringLiteral("/http/command?cmd=skip");
+        sendCommand(QStringLiteral("skip"));
     } else if (cmd == QStringLiteral("/mood")) {
-        url = m_base + QStringLiteral("/http/command?cmd=change_mood&mood=") +
-                QString::fromUtf8(QUrl::toPercentEncoding(rest));
+        sendCommand(QStringLiteral("change_mood"), QStringLiteral("&mood=") +
+                QString::fromUtf8(QUrl::toPercentEncoding(rest)));
     } else if (cmd == QStringLiteral("/accept") || cmd == QStringLiteral("/doit")) {
-        url = m_base + QStringLiteral("/http/command?cmd=confirm_transition");
+        sendCommand(QStringLiteral("confirm_transition"));
     } else if (cmd == QStringLiteral("/reject")) {
-        url = m_base + QStringLiteral("/http/command?cmd=reject_transition");
+        sendCommand(QStringLiteral("reject_transition"));
+    } else if (cmd == QStringLiteral("/like")) {
+        sendCommand(QStringLiteral("feedback"), QStringLiteral("&type=like"));
+    } else if (cmd == QStringLiteral("/dislike")) {
+        sendCommand(QStringLiteral("feedback"), QStringLiteral("&type=dislike"));
     } else {
+        appendActivityNote(QStringLiteral(
+                "<div style='color:#E0A030;'>unknown command: %1</div>").arg(esc(cmd)));
         return false;
     }
-    m_net.get(QNetworkRequest(QUrl(url)));
-    // State/activity will reflect the effect on the next poll.
-    QTimer::singleShot(600, this, &DlgDJTretaChat::pollChat);
+    appendActivityNote(QStringLiteral(
+            "<div style='color:#7FB0E8;'>» %1</div>").arg(esc(text)));
     return true;
 }
 
-void DlgDJTretaChat::pollChat() {
-    m_net.get(QNetworkRequest(QUrl(m_base + QStringLiteral("/http/chat?n=40"))));
-    m_net.get(QNetworkRequest(QUrl(m_base + QStringLiteral("/http/activity?n=60"))));
-    m_net.get(QNetworkRequest(QUrl(m_base + QStringLiteral("/http/state"))));
+void DlgDJTretaChat::onSkip() { sendCommand(QStringLiteral("skip")); }
+void DlgDJTretaChat::onLike() { sendCommand(QStringLiteral("feedback"), QStringLiteral("&type=like")); }
+void DlgDJTretaChat::onDislike() { sendCommand(QStringLiteral("feedback"), QStringLiteral("&type=dislike")); }
+void DlgDJTretaChat::onDoIt() { sendCommand(QStringLiteral("confirm_transition")); }
+void DlgDJTretaChat::onNo() { sendCommand(QStringLiteral("reject_transition")); }
+
+void DlgDJTretaChat::appendActivityNote(const QString& html) {
+    m_pActivity->append(html);
+    m_pActivity->verticalScrollBar()->setValue(
+            m_pActivity->verticalScrollBar()->maximum());
+}
+
+void DlgDJTretaChat::poll() {
+    for (const char* path : {"/http/chat?n=40", "/http/activity?n=80",
+                 "/http/state", "/http/log?n=120", "/http/reflections",
+                 "/http/tracklist", "/http/billing"}) {
+        m_net.get(QNetworkRequest(QUrl(base() + QString::fromLatin1(path))));
+    }
 }
 
 void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
@@ -197,53 +348,127 @@ void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
         return;
     }
     const QString path = pReply->url().path();
+    const QJsonDocument doc = QJsonDocument::fromJson(pReply->readAll());
+    if (!doc.isObject()) {
+        return;
+    }
+    const QJsonObject o = doc.object();
     if (path == QStringLiteral("/http/chat")) {
-        renderTurns(pReply->readAll());
-    } else if (path == QStringLiteral("/http/activity")) {
-        const QJsonDocument doc = QJsonDocument::fromJson(pReply->readAll());
-        if (doc.isObject()) {
-            m_activity = doc.object().value(QStringLiteral("activity")).toArray();
-            rebuild();
-            renderAgents();
+        const QJsonArray turns = o.value(QStringLiteral("turns")).toArray();
+        if (!m_pendingUserMsg.isEmpty()) {
+            for (const QJsonValue& v : turns) {
+                const QJsonObject t = v.toObject();
+                if (t.value(QStringLiteral("role")).toString() == QStringLiteral("user") &&
+                        t.value(QStringLiteral("content")).toString() == m_pendingUserMsg) {
+                    m_pendingUserMsg.clear();
+                    break;
+                }
+            }
         }
+        m_turns = turns;
+        renderChat();
+    } else if (path == QStringLiteral("/http/activity")) {
+        m_activity = o.value(QStringLiteral("activity")).toArray();
+        renderChat();
+        renderActivity();
+        renderAgents();
     } else if (path == QStringLiteral("/http/state")) {
-        renderStatus(pReply->readAll());
+        m_lastState = o;
+        renderStatus(QByteArray());
+        renderAgents();
+        renderSet();
+    } else if (path == QStringLiteral("/http/log")) {
+        m_log = o.value(QStringLiteral("log")).toArray();
+        renderActivity();
+        renderLogs();
+    } else if (path == QStringLiteral("/http/reflections")) {
+        m_reflections = o.value(QStringLiteral("reflections")).toArray();
+        renderReflect();
+    } else if (path == QStringLiteral("/http/tracklist")) {
+        m_tracklist = o.value(QStringLiteral("tracks")).toArray();
+        renderSet();
+    } else if (path == QStringLiteral("/http/billing")) {
+        m_billing = o;
+        renderStatus(QByteArray());
+    } else if (path == QStringLiteral("/http/command")) {
+        const QString res = o.value(QStringLiteral("result")).toString();
+        if (!res.isEmpty()) {
+            appendActivityNote(QStringLiteral(
+                    "<div style='color:#85C85B;'>✓ %1</div>").arg(esc(res)));
+        }
     }
 }
 
-void DlgDJTretaChat::renderAgents() {
-    struct Ag {
-        const char* key;   // matched against the event 'agent' field
-        const char* icon;
-        const char* label;
-    };
-    static const Ag kAgents[] = {
-            {"treta", "🧠", "treta"},
-            {"dj_treta", "🎧", "dj"},
-            {"planner", "📋", "planner"},
-            {"consciousness", "💭", "mind"},
-            {"mixer", "🎛", "mixer"},
-    };
-    const double now = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+void DlgDJTretaChat::renderStatus(const QByteArray&) {
+    const QJsonObject d = m_lastState;
+    const QJsonObject cur = d.value(QStringLiteral("current_track")).toObject();
+    const QJsonObject set = d.value(QStringLiteral("set")).toObject();
+    const bool playing = d.value(QStringLiteral("phase")).toString() ==
+            QStringLiteral("playing");
+    const QString dot = playing ? QStringLiteral("#85C85B") : QStringLiteral("#777");
+    const bool sarathi = d.value(QStringLiteral("sarathi_mode")).toBool();
+    const QString modeStr = sarathi ? tr("SARATHI") : tr("AUTO");
+    const QString modeColor = sarathi ? QStringLiteral("#E0A030") : QStringLiteral("#2D9CDB");
 
-    // Latest activity entry per agent (by substring match on the agent field).
+    QString now;
+    const QString title = cur.value(QStringLiteral("title")).toString();
+    if (!title.isEmpty()) {
+        const int bpm = cur.value(QStringLiteral("bpm")).toInt();
+        now = QStringLiteral("<b style='color:#F2F2F2;'>%1</b>").arg(esc(title));
+        if (bpm > 0) {
+            now += QStringLiteral("  <span style='color:#9AC;'>%1 BPM</span>").arg(bpm);
+        }
+    } else {
+        now = QStringLiteral("<span style='color:#888;'>nothing playing</span>");
+    }
+
+    QString setLine;
+    const QString setTitle = set.value(QStringLiteral("title")).toString();
+    if (!setTitle.isEmpty()) {
+        const int elapsed = set.value(QStringLiteral("elapsed")).toInt() / 60;
+        const int target = set.value(QStringLiteral("target_minutes")).toInt();
+        const QString mood = set.value(QStringLiteral("mood")).toString();
+        setLine = QStringLiteral(
+                "<span style='color:#999; font-size:11px;'>“%1” · %2 · %3/%4 min</span>")
+                          .arg(esc(setTitle), esc(mood)).arg(elapsed).arg(target);
+    }
+
+    QString billing;
+    const double cost = m_billing.value(QStringLiteral("total_cost_usd")).toDouble();
+    if (cost > 0) {
+        billing = QStringLiteral(
+                "<span style='color:#666; font-size:11px;'>   ·   $%1</span>")
+                          .arg(cost, 0, 'f', 3);
+    }
+
+    m_pStatus->setText(QStringLiteral(
+            "<span style='color:%1;'>●</span> "
+            "<span style='color:%2; font-weight:bold; font-size:11px;'>%3</span>　%4%5<br>%6")
+            .arg(dot, modeColor, modeStr, now, billing, setLine));
+}
+
+void DlgDJTretaChat::renderAgents() {
+    struct Ag { const char* key; const char* icon; const char* label; };
+    static const Ag kAgents[] = {
+            {"treta", "🧠", "treta"}, {"dj_treta", "🎧", "dj"},
+            {"planner", "📋", "planner"}, {"consciousness", "💭", "mind"},
+            {"mixer", "🎛", "mixer"}};
+    const double now = QDateTime::currentMSecsSinceEpoch() / 1000.0;
     QString out;
     for (const auto& ag : kAgents) {
         QString status = QStringLiteral("idle");
         QString color = QStringLiteral("#666");
         const QString key = QString::fromLatin1(ag.key);
-        // Walk newest→oldest; first match within 30s wins.
         for (int i = m_activity.size() - 1; i >= 0; --i) {
             const QJsonObject e = m_activity.at(i).toObject();
             if (!e.value(QStringLiteral("agent")).toString().contains(key)) {
                 continue;
             }
             if (now - e.value(QStringLiteral("ts")).toDouble() > 30.0) {
-                break;  // most recent for this agent is stale → idle
+                break;
             }
             if (e.value(QStringLiteral("type")).toString() == QStringLiteral("call")) {
-                status = QStringLiteral("🔧 %1").arg(
-                        e.value(QStringLiteral("tool")).toString());
+                status = QStringLiteral("🔧 %1").arg(e.value(QStringLiteral("tool")).toString());
                 color = QStringLiteral("#7FB0E8");
             } else {
                 status = QStringLiteral("thinking");
@@ -251,7 +476,6 @@ void DlgDJTretaChat::renderAgents() {
             }
             break;
         }
-        // Live overrides from state flags.
         if (key == QStringLiteral("dj_treta") &&
                 m_lastState.value(QStringLiteral("agent_busy")).toBool()) {
             status = QStringLiteral("thinking");
@@ -263,176 +487,40 @@ void DlgDJTretaChat::renderAgents() {
             status = QStringLiteral("planning");
             color = QStringLiteral("#E0A030");
         }
-        out += QStringLiteral(
-                "<span style='color:%1; font-size:11px;'>%2 %3</span>"
-                "<span style='color:#444;'>  ·  </span>")
-                       .arg(color,
-                               QString::fromUtf8(ag.icon),
+        out += QStringLiteral("<span style='color:%1; font-size:11px;'>%2 %3</span>"
+                              "<span style='color:#444;'>  ·  </span>")
+                       .arg(color, QString::fromUtf8(ag.icon),
                                status == QStringLiteral("idle")
-                                       ? QString::fromUtf8(ag.label)
-                                       : status);
+                                       ? QString::fromUtf8(ag.label) : status);
     }
     m_pAgents->setText(out);
 }
 
-void DlgDJTretaChat::renderStatus(const QByteArray& json) {
-    const QJsonDocument doc = QJsonDocument::fromJson(json);
-    if (!doc.isObject()) {
-        return;
-    }
-    const QJsonObject d = doc.object();
-    m_lastState = d;
-    renderAgents();
-    const QJsonObject cur = d.value(QStringLiteral("current_track")).toObject();
-    const QJsonObject set = d.value(QStringLiteral("set")).toObject();
-
-    const bool playing = d.value(QStringLiteral("phase")).toString() ==
-            QStringLiteral("playing");
-    const QString dot = playing ? QStringLiteral("#85C85B") : QStringLiteral("#777");
-    const bool sarathi = d.value(QStringLiteral("sarathi_mode")).toBool();
-    const QString modeStr = sarathi ? tr("SARATHI") : tr("AUTO");
-    const QString modeColor = sarathi ? QStringLiteral("#E0A030") : QStringLiteral("#2D9CDB");
-
-    QString nowLine;
-    const QString title = cur.value(QStringLiteral("title")).toString();
-    if (!title.isEmpty()) {
-        const int bpm = cur.value(QStringLiteral("bpm")).toInt();
-        nowLine = QStringLiteral("<b style='color:#F2F2F2;'>%1</b>").arg(title.toHtmlEscaped());
-        if (bpm > 0) {
-            nowLine += QStringLiteral("  <span style='color:#9AC;'>%1 BPM</span>").arg(bpm);
-        }
-    } else {
-        nowLine = QStringLiteral("<span style='color:#888;'>nothing playing</span>");
-    }
-
-    QString setLine;
-    const QString setTitle = set.value(QStringLiteral("title")).toString();
-    if (!setTitle.isEmpty()) {
-        const int elapsed = set.value(QStringLiteral("elapsed")).toInt() / 60;
-        const int target = set.value(QStringLiteral("target_minutes")).toInt();
-        const QString mood = set.value(QStringLiteral("mood")).toString();
-        setLine = QStringLiteral(
-                "<span style='color:#999; font-size:11px;'>“%1” · %2 · %3/%4 min</span>")
-                          .arg(setTitle.toHtmlEscaped(), mood.toHtmlEscaped())
-                          .arg(elapsed)
-                          .arg(target);
-    }
-
-    m_pStatus->setText(QStringLiteral(
-            "<span style='color:%1;'>●</span> "
-            "<span style='color:%2; font-weight:bold; font-size:11px;'>%3</span>　%4<br>%5")
-            .arg(dot, modeColor, modeStr, nowLine, setLine));
-}
-
-namespace {
-QString bubbleHtml(bool mine, const QString& who, QString content) {
-    content = content.toHtmlEscaped();
-    content.replace(QStringLiteral("\n"), QStringLiteral("<br>"));
-    const QString align = mine ? QStringLiteral("right") : QStringLiteral("left");
-    const QString bg = mine ? QStringLiteral("#2D6FE0")    // accent blue
-                            : QStringLiteral("#26302B");   // dark green-grey
-    const QString nameColor = mine ? QStringLiteral("#BCD8FF")
-                                   : QStringLiteral("#85C85B");
-    return QStringLiteral(
-            "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-            "<td align='%1'>"
-            "<table cellspacing='0' cellpadding='8' style='max-width:560px;'>"
-            "<tr><td bgcolor='%2' style='color:#F2F2F2; font-size:13px;'>"
-            "<span style='color:%3; font-weight:bold; font-size:11px;'>%4</span><br>%5"
-            "</td></tr></table></td></tr></table>"
-            "<table cellspacing='0' cellpadding='2'><tr><td>&nbsp;</td></tr></table>")
-            .arg(align, bg, nameColor, who, content);
-}
-
-// Compact, dim, left-aligned line for a thinking step or tool call — "in
-// short" visibility into what Treta is doing, interleaved with the bubbles.
-QString activityHtml(const QJsonObject& a) {
-    const QString type = a.value(QStringLiteral("type")).toString();
-    QString body;
-    QString color;
-    if (type == QStringLiteral("call")) {
-        QString args = a.value(QStringLiteral("args")).toString();
-        if (args.size() > 70) {
-            args = args.left(67) + QStringLiteral("…");
-        }
-        body = QStringLiteral("🔧 %1(%2)")
-                       .arg(a.value(QStringLiteral("tool")).toString().toHtmlEscaped(),
-                               args.toHtmlEscaped());
-        color = QStringLiteral("#7FB0E8");  // tool = soft blue
-    } else { // think
-        QString text = a.value(QStringLiteral("text")).toString().simplified();
-        if (text.size() > 130) {
-            text = text.left(127) + QStringLiteral("…");
-        }
-        body = QStringLiteral("💭 %1").arg(text.toHtmlEscaped());
-        color = QStringLiteral("#777777");  // thinking = grey
-    }
-    return QStringLiteral(
-            "<div style='color:%1; font-size:11px; margin:1px 0 1px 6px;'>%2</div>")
-            .arg(color, body);
-}
-} // anonymous namespace
-
-void DlgDJTretaChat::renderTurns(const QByteArray& json) {
-    const QJsonDocument doc = QJsonDocument::fromJson(json);
-    if (!doc.isObject()) {
-        return;
-    }
-    m_turns = doc.object().value(QStringLiteral("turns")).toArray();
-
-    // If the server now reflects our pending message (the daemon writes the
-    // user+assistant turn together once Treta replies), drop the optimism.
-    if (!m_pendingUserMsg.isEmpty()) {
-        for (const QJsonValue& v : m_turns) {
-            const QJsonObject t = v.toObject();
-            if (t.value(QStringLiteral("role")).toString() == QStringLiteral("user") &&
-                    t.value(QStringLiteral("content")).toString() == m_pendingUserMsg) {
-                m_pendingUserMsg.clear();
-                break;
-            }
-        }
-    }
-    rebuild();
-}
-
-void DlgDJTretaChat::rebuild() {
-    // Dirty-check so periodic polls don't reset scroll / flicker when nothing
-    // changed.
+void DlgDJTretaChat::renderChat() {
     const QString sig = QString::number(m_turns.size()) + QStringLiteral("/") +
-            QString::number(m_activity.size()) + QStringLiteral("|") +
-            m_pendingUserMsg;
-    if (sig == m_lastRenderSig) {
+            QString::number(m_activity.size()) + QStringLiteral("|") + m_pendingUserMsg;
+    if (sig == m_sigChat) {
         return;
     }
-    m_lastRenderSig = sig;
-
-    // Merge chat turns (bubbles) + activity (compact lines) into one timeline,
-    // ordered by timestamp, so you see: your message → her thinking → tool
-    // calls → her reply.
+    m_sigChat = sig;
     std::vector<std::pair<double, QString>> items;
     for (const QJsonValue& v : m_turns) {
         const QJsonObject t = v.toObject();
-        const bool mine = t.value(QStringLiteral("role")).toString() ==
-                QStringLiteral("user");
+        const bool mine = t.value(QStringLiteral("role")).toString() == QStringLiteral("user");
         items.emplace_back(t.value(QStringLiteral("ts")).toDouble(),
                 bubbleHtml(mine, mine ? tr("You") : tr("DJ Treta"),
                         t.value(QStringLiteral("content")).toString()));
     }
     for (const QJsonValue& v : m_activity) {
         const QJsonObject a = v.toObject();
-        // Skip "think" entries: for the chat agent the thinking text IS the
-        // reply (Gemini emits no separate reasoning), so it just duplicates
-        // the bubble. Tool calls are the real, non-duplicate visibility.
         if (a.value(QStringLiteral("type")).toString() != QStringLiteral("call")) {
             continue;
         }
-        items.emplace_back(a.value(QStringLiteral("ts")).toDouble(), activityHtml(a));
+        items.emplace_back(a.value(QStringLiteral("ts")).toDouble(), toolLineHtml(a));
     }
     std::stable_sort(items.begin(), items.end(),
             [](const auto& x, const auto& y) { return x.first < y.first; });
-
-    QString html = QStringLiteral(
-            "<html><body style='font-family:\"Open Sans\",sans-serif;'>");
+    QString html = QStringLiteral("<html><body>");
     for (const auto& it : items) {
         html += it.second;
     }
@@ -441,7 +529,136 @@ void DlgDJTretaChat::rebuild() {
         html += bubbleHtml(false, tr("DJ Treta"), QStringLiteral("…"));
     }
     html += QStringLiteral("</body></html>");
+    m_pChat->setHtml(html);
+    m_pChat->verticalScrollBar()->setValue(m_pChat->verticalScrollBar()->maximum());
+}
 
-    m_pLog->setHtml(html);
-    m_pLog->verticalScrollBar()->setValue(m_pLog->verticalScrollBar()->maximum());
+void DlgDJTretaChat::renderActivity() {
+    const QString sig = QString::number(m_activity.size()) + QStringLiteral("/") +
+            QString::number(m_log.size());
+    if (sig == m_sigActivity) {
+        return;
+    }
+    m_sigActivity = sig;
+    std::vector<std::pair<double, QString>> items;
+    for (const QJsonValue& v : m_activity) {
+        const QJsonObject a = v.toObject();
+        const double ts = a.value(QStringLiteral("ts")).toDouble();
+        if (a.value(QStringLiteral("type")).toString() == QStringLiteral("call")) {
+            items.emplace_back(ts, toolLineHtml(a));
+        } else {
+            QString t = a.value(QStringLiteral("text")).toString().simplified();
+            if (t.size() > 140) t = t.left(137) + QStringLiteral("…");
+            items.emplace_back(ts, QStringLiteral(
+                    "<div style='color:#888; font-size:11px; margin:1px 6px;'>💭 %1</div>")
+                    .arg(esc(t)));
+        }
+    }
+    for (const QJsonValue& v : m_log) {
+        const QJsonObject e = v.toObject();
+        items.emplace_back(e.value(QStringLiteral("ts")).toDouble(),
+                logLineHtml(e.value(QStringLiteral("text")).toString()));
+    }
+    std::stable_sort(items.begin(), items.end(),
+            [](const auto& x, const auto& y) { return x.first < y.first; });
+    QString html = QStringLiteral("<html><body>");
+    for (const auto& it : items) html += it.second;
+    html += QStringLiteral("</body></html>");
+    m_pActivity->setHtml(html);
+    m_pActivity->verticalScrollBar()->setValue(m_pActivity->verticalScrollBar()->maximum());
+}
+
+void DlgDJTretaChat::renderLogs() {
+    const QString sig = QString::number(m_log.size());
+    if (sig == m_sigLogs) {
+        return;
+    }
+    m_sigLogs = sig;
+    QString dj = QStringLiteral("<html><body>");
+    QString pl = dj, lib = dj, iss = dj;
+    for (const QJsonValue& v : m_log) {
+        const QString t = v.toObject().value(QStringLiteral("text")).toString();
+        const QString line = logLineHtml(t);
+        if (inDj(t)) dj += line;
+        if (inPlanner(t)) pl += line;
+        if (inLibrary(t)) lib += line;
+        if (inIssues(t)) iss += line;
+    }
+    const QString tail = QStringLiteral("</body></html>");
+    m_pDj->setHtml(dj + tail);
+    m_pPlanner->setHtml(pl + tail);
+    m_pLibrary->setHtml(lib + tail);
+    m_pIssues->setHtml(iss + tail);
+    for (QTextBrowser* b : {m_pDj, m_pPlanner, m_pLibrary, m_pIssues}) {
+        b->verticalScrollBar()->setValue(b->verticalScrollBar()->maximum());
+    }
+}
+
+void DlgDJTretaChat::renderSet() {
+    const QJsonObject set = m_lastState.value(QStringLiteral("set")).toObject();
+    const QJsonArray arc = set.value(QStringLiteral("energy_arc")).toArray();
+    const QString sig = set.value(QStringLiteral("title")).toString() +
+            QStringLiteral("/") + QString::number(arc.size()) +
+            QStringLiteral("/") + QString::number(m_tracklist.size());
+    if (sig == m_sigSet) {
+        return;
+    }
+    m_sigSet = sig;
+    QString html = QStringLiteral("<html><body style='color:#DDD; font-size:12px;'>");
+    const QString title = set.value(QStringLiteral("title")).toString();
+    if (!title.isEmpty()) {
+        html += QStringLiteral("<p><b style='color:#F2F2F2;'>%1</b>  "
+                "<span style='color:#888;'>%2</span></p>")
+                        .arg(esc(title), esc(set.value(QStringLiteral("mood")).toString()));
+    }
+    if (!arc.isEmpty()) {
+        html += QStringLiteral("<p style='font-size:15px; letter-spacing:0px;'>%1</p>")
+                        .arg(sparkline(arc));
+    }
+    if (!m_tracklist.isEmpty()) {
+        html += QStringLiteral("<p style='color:#888;'>Played:</p><ol style='color:#CCC;'>");
+        for (const QJsonValue& v : m_tracklist) {
+            const QJsonObject t = v.toObject();
+            QString fb = t.value(QStringLiteral("feedback")).toString();
+            QString icon = fb == QStringLiteral("like") ? QStringLiteral(" 👍")
+                    : fb == QStringLiteral("dislike")   ? QStringLiteral(" 👎")
+                                                        : QString();
+            html += QStringLiteral("<li>%1%2</li>")
+                            .arg(esc(t.value(QStringLiteral("title")).toString()), icon);
+        }
+        html += QStringLiteral("</ol>");
+    } else {
+        html += QStringLiteral("<p style='color:#666;'>No tracks played yet.</p>");
+    }
+    html += QStringLiteral("</body></html>");
+    m_pSet->setHtml(html);
+}
+
+void DlgDJTretaChat::renderReflect() {
+    const QString sig = QString::number(m_reflections.size());
+    if (sig == m_sigReflect) {
+        return;
+    }
+    m_sigReflect = sig;
+    QString html = QStringLiteral("<html><body style='color:#CCC; font-size:12px;'>");
+    if (m_reflections.isEmpty()) {
+        html += QStringLiteral("<p style='color:#666;'>No reflections yet "
+                "(she reflects every ~15 min).</p>");
+    }
+    for (int i = m_reflections.size() - 1; i >= 0; --i) {
+        const QJsonObject r = m_reflections.at(i).toObject();
+        const QString intent = r.value(QStringLiteral("next_intent")).toString();
+        const QString drift = r.value(QStringLiteral("mood_drift_observed")).toString();
+        html += QStringLiteral("<div style='border-left:2px solid #2D6FE0; "
+                "padding-left:8px; margin:6px 0;'>");
+        if (!intent.isEmpty()) {
+            html += QStringLiteral("<b style='color:#85C85B;'>→ %1</b><br>").arg(esc(intent));
+        }
+        if (!drift.isEmpty()) {
+            html += QStringLiteral("<span style='color:#999;'>mood: %1</span>").arg(esc(drift));
+        }
+        html += QStringLiteral("</div>");
+    }
+    html += QStringLiteral("</body></html>");
+    m_pReflect->setHtml(html);
 }

@@ -9,17 +9,19 @@
 #include "library/libraryview.h"
 
 class QLabel;
+class QTabWidget;
 class QTextBrowser;
 class QLineEdit;
 class QTimer;
 class QNetworkReply;
 class QCompleter;
 
-// In-Mixxx chat window for talking to DJ Treta, mirroring the TUI chat.
-// Talks to the DJ Treta daemon over plain HTTP on :7779 (QtNetwork — no
-// QtWebSockets dependency): sends via GET /http/talk?msg=, polls GET
-// /http/chat for the conversation. Shown in the library region when the
-// "Chat" node of the DJ Treta sidebar feature is selected.
+// DJ Treta cockpit — the full brain inside Mixxx, native (no terminal/web
+// embed; Mixxx has neither). Layout: persistent status strip + agent row on
+// top, a QTabWidget (Chat/Activity/Set/DJ/Planner/Library/Reflect/Issues) in
+// the middle, input + action buttons at bottom. Mirrors the TUI 1:1. All data
+// from the daemon's :7779 HTTP surface (QtNetwork polling); writes via
+// /http/command. Shown when the DJ Treta sidebar root is selected.
 class DlgDJTretaChat : public QWidget, public virtual LibraryView {
     Q_OBJECT
   public:
@@ -33,30 +35,59 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
 
   private slots:
     void sendMessage();
-    void pollChat();
+    void poll();
     void onReply(QNetworkReply* pReply);
+    void onSkip();
+    void onLike();
+    void onDislike();
+    void onDoIt();
+    void onNo();
 
   private:
-    void renderStatus(const QByteArray& json);  // top status strip from /http/state
-    void renderAgents();  // agent-activity row from m_activity + m_lastState
-
-  private:
-    void renderTurns(const QByteArray& json);
-    void rebuild();  // render m_turns (+ optimistic pending bubble) into m_pLog
     void setupCommandCompleter();
-    bool handleSlashCommand(const QString& text);  // true if handled as a command
+    bool handleSlashCommand(const QString& text);
+    void sendCommand(const QString& cmd, const QString& extraQuery = QString());
+    void appendActivityNote(const QString& html);
 
+    void renderStatus(const QByteArray& json);
+    void renderAgents();
+    void renderChat();
+    void renderActivity();
+    void renderSet();
+    void renderLogs();
+    void renderReflect();
+
+    QString base() const;
+
+    // Top strips
     QLabel* m_pStatus;
     QLabel* m_pAgents;
-    QTextBrowser* m_pLog;
+    // Tabs
+    QTabWidget* m_pTabs;
+    QTextBrowser* m_pChat;
+    QTextBrowser* m_pActivity;
+    QTextBrowser* m_pSet;
+    QTextBrowser* m_pDj;
+    QTextBrowser* m_pPlanner;
+    QTextBrowser* m_pLibrary;
+    QTextBrowser* m_pReflect;
+    QTextBrowser* m_pIssues;
+    // Input
     QLineEdit* m_pInput;
     QCompleter* m_pCompleter;
-    QTimer* m_pPollTimer;
+
     QNetworkAccessManager m_net;
-    QString m_base;
-    QJsonArray m_turns;          // last server-confirmed turns
-    QJsonArray m_activity;       // recent thinking + tool calls (visibility feed)
-    QJsonObject m_lastState;     // last /http/state snapshot (for agent statuses)
-    QString m_pendingUserMsg;    // sent but not yet reflected by the server
-    QString m_lastRenderSig;     // dirty-check to avoid flicker/scroll-jump
+    QTimer* m_pPollTimer;
+
+    // Polled state
+    QJsonArray m_turns;
+    QJsonArray m_activity;
+    QJsonArray m_log;
+    QJsonArray m_reflections;
+    QJsonArray m_tracklist;
+    QJsonObject m_lastState;
+    QJsonObject m_billing;
+    QString m_pendingUserMsg;
+    // Dirty-check sigs (avoid flicker/scroll-jump on unchanged polls)
+    QString m_sigChat, m_sigActivity, m_sigSet, m_sigLogs, m_sigReflect;
 };
