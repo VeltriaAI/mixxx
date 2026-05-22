@@ -11,6 +11,7 @@ class QTextBrowser;
 class QLineEdit;
 class QTimer;
 class QNetworkReply;
+class QCompleter;
 
 // In-Mixxx chat window for talking to DJ Treta, mirroring the TUI chat.
 // Talks to the DJ Treta daemon over plain HTTP on :7779 (QtNetwork — no
@@ -36,9 +37,12 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
   private:
     void renderTurns(const QByteArray& json);
     void rebuild();  // render m_turns (+ optimistic pending bubble) into m_pLog
+    void setupCommandCompleter();
+    bool handleSlashCommand(const QString& text);  // true if handled as a command
 
     QTextBrowser* m_pLog;
     QLineEdit* m_pInput;
+    QCompleter* m_pCompleter;
     QTimer* m_pPollTimer;
     QNetworkAccessManager m_net;
     QString m_base;

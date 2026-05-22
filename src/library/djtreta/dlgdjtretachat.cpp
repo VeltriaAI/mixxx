@@ -4,11 +4,15 @@
 #include <utility>
 #include <vector>
 
+#include <QAbstractItemView>
+#include <QCompleter>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QStandardItem>
+#include <QStandardItemModel>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPushButton>
@@ -23,6 +27,20 @@
 namespace {
 const QString kBase = QStringLiteral("http://127.0.0.1:7779");
 constexpr int kPollMs = 1500;
+
+// Slash commands offered in the chat (Claude-Code-style popup on "/").
+struct SlashCmd {
+    const char* name;
+    const char* desc;
+};
+const SlashCmd kSlashCmds[] = {
+        {"/auto", "Autonomous mode — Treta drives the set"},
+        {"/sarathi", "Sarathi mode — you drive on the FLX4"},
+        {"/skip", "Skip the current track"},
+        {"/mood", "Change mood / genre   (e.g. /mood deep)"},
+        {"/accept", "Fire Treta's transition suggestion"},
+        {"/reject", "Drop her suggestion + reshape"},
+};
 } // anonymous namespace
 
 DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
@@ -66,6 +84,30 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
     connect(pSend, &QPushButton::clicked, this, &DlgDJTretaChat::sendMessage);
     connect(m_pPollTimer, &QTimer::timeout, this, &DlgDJTretaChat::pollChat);
     connect(&m_net, &QNetworkAccessManager::finished, this, &DlgDJTretaChat::onReply);
+
+    setupCommandCompleter();
+}
+
+void DlgDJTretaChat::setupCommandCompleter() {
+    // Popup of slash commands shown as you type "/". The popup DISPLAYS
+    // "/cmd — description" but the completion that gets inserted is just
+    // "/cmd " (EditRole) — like Claude Code's slash menu.
+    auto* pModel = new QStandardItemModel(this);
+    for (const auto& c : kSlashCmds) {
+        auto* pItem = new QStandardItem();
+        pItem->setData(QStringLiteral("%1   —   %2")
+                               .arg(QString::fromLatin1(c.name),
+                                       QString::fromLatin1(c.desc)),
+                Qt::DisplayRole);
+        pItem->setData(QString(QString::fromLatin1(c.name) + QStringLiteral(" ")), Qt::EditRole);
+        pModel->appendRow(pItem);
+    }
+    m_pCompleter = new QCompleter(pModel, this);
+    m_pCompleter->setCompletionRole(Qt::EditRole);  // match + insert "/cmd "
+    m_pCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    m_pCompleter->setFilterMode(Qt::MatchStartsWith);
+    m_pCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_pInput->setCompleter(m_pCompleter);
 }
 
 void DlgDJTretaChat::onShow() {
@@ -87,6 +129,10 @@ void DlgDJTretaChat::sendMessage() {
         return;
     }
     m_pInput->clear();
+    if (text.startsWith('/')) {
+        handleSlashCommand(text);
+        return;
+    }
     const QString url = m_base + QStringLiteral("/http/talk?msg=") +
             QString::fromUtf8(QUrl::toPercentEncoding(text));
     m_net.get(QNetworkRequest(QUrl(url)));
@@ -96,6 +142,32 @@ void DlgDJTretaChat::sendMessage() {
     m_pendingUserMsg = text;
     rebuild();
     QTimer::singleShot(1200, this, &DlgDJTretaChat::pollChat);
+}
+
+bool DlgDJTretaChat::handleSlashCommand(const QString& text) {
+    const QString cmd = text.section(' ', 0, 0);
+    const QString rest = text.section(' ', 1).trimmed();
+    QString url;
+    if (cmd == QStringLiteral("/auto")) {
+        url = m_base + QStringLiteral("/http/command?cmd=set_mode&mode=autonomous");
+    } else if (cmd == QStringLiteral("/sarathi")) {
+        url = m_base + QStringLiteral("/http/command?cmd=set_mode&mode=sarathi");
+    } else if (cmd == QStringLiteral("/skip")) {
+        url = m_base + QStringLiteral("/http/command?cmd=skip");
+    } else if (cmd == QStringLiteral("/mood")) {
+        url = m_base + QStringLiteral("/http/command?cmd=change_mood&mood=") +
+                QString::fromUtf8(QUrl::toPercentEncoding(rest));
+    } else if (cmd == QStringLiteral("/accept") || cmd == QStringLiteral("/doit")) {
+        url = m_base + QStringLiteral("/http/command?cmd=confirm_transition");
+    } else if (cmd == QStringLiteral("/reject")) {
+        url = m_base + QStringLiteral("/http/command?cmd=reject_transition");
+    } else {
+        return false;
+    }
+    m_net.get(QNetworkRequest(QUrl(url)));
+    // State/activity will reflect the effect on the next poll.
+    QTimer::singleShot(600, this, &DlgDJTretaChat::pollChat);
+    return true;
 }
 
 void DlgDJTretaChat::pollChat() {
