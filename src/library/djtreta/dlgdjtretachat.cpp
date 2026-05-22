@@ -267,9 +267,9 @@ void DlgDJTretaChat::renderAgents() {
                 "<span style='color:%1; font-size:11px;'>%2 %3</span>"
                 "<span style='color:#444;'>  ·  </span>")
                        .arg(color,
-                               QString::fromLatin1(ag.icon),
+                               QString::fromUtf8(ag.icon),
                                status == QStringLiteral("idle")
-                                       ? QString::fromLatin1(ag.label)
+                                       ? QString::fromUtf8(ag.label)
                                        : status);
     }
     m_pAgents->setText(out);
