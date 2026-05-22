@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QString>
 #include <QWidget>
@@ -37,6 +38,7 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
 
   private:
     void renderStatus(const QByteArray& json);  // top status strip from /http/state
+    void renderAgents();  // agent-activity row from m_activity + m_lastState
 
   private:
     void renderTurns(const QByteArray& json);
@@ -45,6 +47,7 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
     bool handleSlashCommand(const QString& text);  // true if handled as a command
 
     QLabel* m_pStatus;
+    QLabel* m_pAgents;
     QTextBrowser* m_pLog;
     QLineEdit* m_pInput;
     QCompleter* m_pCompleter;
@@ -53,6 +56,7 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
     QString m_base;
     QJsonArray m_turns;          // last server-confirmed turns
     QJsonArray m_activity;       // recent thinking + tool calls (visibility feed)
+    QJsonObject m_lastState;     // last /http/state snapshot (for agent statuses)
     QString m_pendingUserMsg;    // sent but not yet reflected by the server
     QString m_lastRenderSig;     // dirty-check to avoid flicker/scroll-jump
 };

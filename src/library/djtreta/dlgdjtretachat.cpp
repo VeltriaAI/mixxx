@@ -6,6 +6,7 @@
 
 #include <QAbstractItemView>
 #include <QCompleter>
+#include <QDateTime>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -47,12 +48,15 @@ const SlashCmd kSlashCmds[] = {
 DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
         : QWidget(parent),
           m_pStatus(new QLabel(this)),
+          m_pAgents(new QLabel(this)),
           m_pLog(new QTextBrowser(this)),
           m_pInput(new QLineEdit(this)),
           m_pPollTimer(new QTimer(this)),
           m_base(kBase) {
     m_pStatus->setTextFormat(Qt::RichText);
     m_pStatus->setText(tr("DJ Treta — connecting…"));
+    m_pAgents->setTextFormat(Qt::RichText);
+    m_pAgents->setObjectName(QStringLiteral("agents"));
     m_pLog->setOpenExternalLinks(false);
     m_pLog->setFrameShape(QFrame::NoFrame);
     m_pInput->setPlaceholderText(tr("Talk to DJ Treta…  (/ for commands)"));
@@ -65,6 +69,8 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
             "QWidget { background: #161616; }"
             "QLabel { background: #1E1E1E; border: 1px solid #2A2A2A;"
             "  border-radius: 8px; padding: 7px 12px; color: #ECECEC; }"
+            "QLabel#agents { background: transparent; border: none;"
+            "  padding: 0 6px; }"
             "QTextBrowser { background: #161616; border: none; }"
             "QLineEdit {"
             "  background: #232323; color: #ECECEC; border: 1px solid #333;"
@@ -84,6 +90,7 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
     pLayout->setContentsMargins(8, 8, 8, 8);
     pLayout->setSpacing(6);
     pLayout->addWidget(m_pStatus, 0);
+    pLayout->addWidget(m_pAgents, 0);
     pLayout->addWidget(m_pLog, 1);
     pLayout->addLayout(pInputRow, 0);
     setLayout(pLayout);
@@ -197,10 +204,75 @@ void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
         if (doc.isObject()) {
             m_activity = doc.object().value(QStringLiteral("activity")).toArray();
             rebuild();
+            renderAgents();
         }
     } else if (path == QStringLiteral("/http/state")) {
         renderStatus(pReply->readAll());
     }
+}
+
+void DlgDJTretaChat::renderAgents() {
+    struct Ag {
+        const char* key;   // matched against the event 'agent' field
+        const char* icon;
+        const char* label;
+    };
+    static const Ag kAgents[] = {
+            {"treta", "🧠", "treta"},
+            {"dj_treta", "🎧", "dj"},
+            {"planner", "📋", "planner"},
+            {"consciousness", "💭", "mind"},
+            {"mixer", "🎛", "mixer"},
+    };
+    const double now = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+
+    // Latest activity entry per agent (by substring match on the agent field).
+    QString out;
+    for (const auto& ag : kAgents) {
+        QString status = QStringLiteral("idle");
+        QString color = QStringLiteral("#666");
+        const QString key = QString::fromLatin1(ag.key);
+        // Walk newest→oldest; first match within 30s wins.
+        for (int i = m_activity.size() - 1; i >= 0; --i) {
+            const QJsonObject e = m_activity.at(i).toObject();
+            if (!e.value(QStringLiteral("agent")).toString().contains(key)) {
+                continue;
+            }
+            if (now - e.value(QStringLiteral("ts")).toDouble() > 30.0) {
+                break;  // most recent for this agent is stale → idle
+            }
+            if (e.value(QStringLiteral("type")).toString() == QStringLiteral("call")) {
+                status = QStringLiteral("🔧 %1").arg(
+                        e.value(QStringLiteral("tool")).toString());
+                color = QStringLiteral("#7FB0E8");
+            } else {
+                status = QStringLiteral("thinking");
+                color = QStringLiteral("#E0A030");
+            }
+            break;
+        }
+        // Live overrides from state flags.
+        if (key == QStringLiteral("dj_treta") &&
+                m_lastState.value(QStringLiteral("agent_busy")).toBool()) {
+            status = QStringLiteral("thinking");
+            color = QStringLiteral("#E0A030");
+        }
+        if (key == QStringLiteral("planner") &&
+                m_lastState.value(QStringLiteral("planner_status")).toString() ==
+                        QStringLiteral("busy")) {
+            status = QStringLiteral("planning");
+            color = QStringLiteral("#E0A030");
+        }
+        out += QStringLiteral(
+                "<span style='color:%1; font-size:11px;'>%2 %3</span>"
+                "<span style='color:#444;'>  ·  </span>")
+                       .arg(color,
+                               QString::fromLatin1(ag.icon),
+                               status == QStringLiteral("idle")
+                                       ? QString::fromLatin1(ag.label)
+                                       : status);
+    }
+    m_pAgents->setText(out);
 }
 
 void DlgDJTretaChat::renderStatus(const QByteArray& json) {
@@ -209,6 +281,8 @@ void DlgDJTretaChat::renderStatus(const QByteArray& json) {
         return;
     }
     const QJsonObject d = doc.object();
+    m_lastState = d;
+    renderAgents();
     const QJsonObject cur = d.value(QStringLiteral("current_track")).toObject();
     const QJsonObject set = d.value(QStringLiteral("set")).toObject();
 
