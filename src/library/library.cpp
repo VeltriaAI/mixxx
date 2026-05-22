@@ -10,6 +10,7 @@
 #include "library/autodj/autodjfeature.h"
 #include "library/banshee/bansheefeature.h"
 #include "library/browse/browsefeature.h"
+#include "library/djtreta/djtretafeature.h"
 #ifdef __ENGINEPRIME__
 #include "library/export/libraryexporter.h"
 #endif
@@ -145,6 +146,9 @@ Library::Library(
     addFeature(m_pBrowseFeature);
 
     addFeature(new RecordingFeature(this, m_pConfig, pRecordingManager));
+
+    // DJ Treta — AI co-founder's crate (sidebar feature, folder-backed).
+    addFeature(new DJTretaFeature(this, m_pConfig, pRecordingManager));
 
     addFeature(new SetlogFeature(this, UserSettingsPointer(m_pConfig)));
 

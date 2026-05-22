@@ -1385,6 +1385,7 @@ add_library(
   src/library/basetracktablemodel.cpp
   src/library/browse/browsefeature.cpp
   src/library/browse/browsetablemodel.cpp
+  src/library/djtreta/djtretafeature.cpp
   src/library/browse/browsethread.cpp
   src/library/browse/foldertreemodel.cpp
   src/library/columncache.cpp
