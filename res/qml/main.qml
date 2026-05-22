@@ -169,6 +169,9 @@ ApplicationWindow {
                 }
             }
         }
+        Skin.SarathiPanel {
+            width: parent.width
+        }
         SplitView {
             id: splitView
 
