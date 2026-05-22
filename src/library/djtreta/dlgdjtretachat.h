@@ -43,6 +43,7 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
     QNetworkAccessManager m_net;
     QString m_base;
     QJsonArray m_turns;          // last server-confirmed turns
+    QJsonArray m_activity;       // recent thinking + tool calls (visibility feed)
     QString m_pendingUserMsg;    // sent but not yet reflected by the server
     QString m_lastRenderSig;     // dirty-check to avoid flicker/scroll-jump
 };

@@ -1,5 +1,9 @@
 #include "library/djtreta/dlgdjtretachat.h"
 
+#include <algorithm>
+#include <utility>
+#include <vector>
+
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -96,6 +100,7 @@ void DlgDJTretaChat::sendMessage() {
 
 void DlgDJTretaChat::pollChat() {
     m_net.get(QNetworkRequest(QUrl(m_base + QStringLiteral("/http/chat?n=40"))));
+    m_net.get(QNetworkRequest(QUrl(m_base + QStringLiteral("/http/activity?n=60"))));
 }
 
 void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
@@ -103,8 +108,15 @@ void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
     if (pReply->error() != QNetworkReply::NoError) {
         return;
     }
-    if (pReply->url().path() == QStringLiteral("/http/chat")) {
+    const QString path = pReply->url().path();
+    if (path == QStringLiteral("/http/chat")) {
         renderTurns(pReply->readAll());
+    } else if (path == QStringLiteral("/http/activity")) {
+        const QJsonDocument doc = QJsonDocument::fromJson(pReply->readAll());
+        if (doc.isObject()) {
+            m_activity = doc.object().value(QStringLiteral("activity")).toArray();
+            rebuild();
+        }
     }
 }
 
@@ -126,6 +138,34 @@ QString bubbleHtml(bool mine, const QString& who, QString content) {
             "</td></tr></table></td></tr></table>"
             "<table cellspacing='0' cellpadding='2'><tr><td>&nbsp;</td></tr></table>")
             .arg(align, bg, nameColor, who, content);
+}
+
+// Compact, dim, left-aligned line for a thinking step or tool call — "in
+// short" visibility into what Treta is doing, interleaved with the bubbles.
+QString activityHtml(const QJsonObject& a) {
+    const QString type = a.value(QStringLiteral("type")).toString();
+    QString body;
+    QString color;
+    if (type == QStringLiteral("call")) {
+        QString args = a.value(QStringLiteral("args")).toString();
+        if (args.size() > 70) {
+            args = args.left(67) + QStringLiteral("…");
+        }
+        body = QStringLiteral("🔧 %1(%2)")
+                       .arg(a.value(QStringLiteral("tool")).toString().toHtmlEscaped(),
+                               args.toHtmlEscaped());
+        color = QStringLiteral("#7FB0E8");  // tool = soft blue
+    } else { // think
+        QString text = a.value(QStringLiteral("text")).toString().simplified();
+        if (text.size() > 130) {
+            text = text.left(127) + QStringLiteral("…");
+        }
+        body = QStringLiteral("💭 %1").arg(text.toHtmlEscaped());
+        color = QStringLiteral("#777777");  // thinking = grey
+    }
+    return QStringLiteral(
+            "<div style='color:%1; font-size:11px; margin:1px 0 1px 6px;'>%2</div>")
+            .arg(color, body);
 }
 } // anonymous namespace
 
@@ -154,22 +194,37 @@ void DlgDJTretaChat::renderTurns(const QByteArray& json) {
 void DlgDJTretaChat::rebuild() {
     // Dirty-check so periodic polls don't reset scroll / flicker when nothing
     // changed.
-    const QString sig = QString::number(m_turns.size()) +
-            QStringLiteral("|") + m_pendingUserMsg;
+    const QString sig = QString::number(m_turns.size()) + QStringLiteral("/") +
+            QString::number(m_activity.size()) + QStringLiteral("|") +
+            m_pendingUserMsg;
     if (sig == m_lastRenderSig) {
         return;
     }
     m_lastRenderSig = sig;
 
-    QString html = QStringLiteral(
-            "<html><body style='font-family:\"Open Sans\",sans-serif;'>");
+    // Merge chat turns (bubbles) + activity (compact lines) into one timeline,
+    // ordered by timestamp, so you see: your message → her thinking → tool
+    // calls → her reply.
+    std::vector<std::pair<double, QString>> items;
     for (const QJsonValue& v : m_turns) {
         const QJsonObject t = v.toObject();
         const bool mine = t.value(QStringLiteral("role")).toString() ==
                 QStringLiteral("user");
-        html += bubbleHtml(mine,
-                mine ? tr("You") : tr("DJ Treta"),
-                t.value(QStringLiteral("content")).toString());
+        items.emplace_back(t.value(QStringLiteral("ts")).toDouble(),
+                bubbleHtml(mine, mine ? tr("You") : tr("DJ Treta"),
+                        t.value(QStringLiteral("content")).toString()));
+    }
+    for (const QJsonValue& v : m_activity) {
+        const QJsonObject a = v.toObject();
+        items.emplace_back(a.value(QStringLiteral("ts")).toDouble(), activityHtml(a));
+    }
+    std::stable_sort(items.begin(), items.end(),
+            [](const auto& x, const auto& y) { return x.first < y.first; });
+
+    QString html = QStringLiteral(
+            "<html><body style='font-family:\"Open Sans\",sans-serif;'>");
+    for (const auto& it : items) {
+        html += it.second;
     }
     if (!m_pendingUserMsg.isEmpty()) {
         html += bubbleHtml(true, tr("You"), m_pendingUserMsg);
