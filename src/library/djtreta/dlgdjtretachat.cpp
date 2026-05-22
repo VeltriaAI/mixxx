@@ -288,6 +288,12 @@ void DlgDJTretaChat::rebuild() {
     }
     for (const QJsonValue& v : m_activity) {
         const QJsonObject a = v.toObject();
+        // Skip "think" entries: for the chat agent the thinking text IS the
+        // reply (Gemini emits no separate reasoning), so it just duplicates
+        // the bubble. Tool calls are the real, non-duplicate visibility.
+        if (a.value(QStringLiteral("type")).toString() != QStringLiteral("call")) {
+            continue;
+        }
         items.emplace_back(a.value(QStringLiteral("ts")).toDouble(), activityHtml(a));
     }
     std::stable_sort(items.begin(), items.end(),
