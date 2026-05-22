@@ -5,6 +5,7 @@
 #include <QStandardPaths>
 
 #include "library/browse/foldertreemodel.h"
+#include "library/djtreta/dlgdjtretachat.h"
 #include "library/library.h"
 #include "library/trackcollectionmanager.h"
 #include "library/treeitem.h"
@@ -16,6 +17,8 @@
 #include "widget/wlibrarytextbrowser.h"
 
 namespace {
+// Clicking the DJ Treta root shows the cockpit view (chat now; grows into the
+// full TUI dashboard). Child nodes (Library/Genres/...) show track tables.
 const QString kViewName = QStringLiteral("DJTreta");
 
 QString withTrailingSlash(QString path) {
@@ -93,12 +96,10 @@ TreeItemModel* DJTretaFeature::sidebarModel() const {
 void DJTretaFeature::bindLibraryWidget(WLibrary* pLibraryWidget,
         KeyboardEventFilter* keyboard) {
     Q_UNUSED(keyboard);
-    WLibraryTextBrowser* pEdit = new WLibraryTextBrowser(pLibraryWidget);
-    pEdit->setHtml(QStringLiteral(
-            "<h2>DJ Treta</h2>"
-            "<p>Your AI co-founder's crate. Pick a node on the left — "
-            "Library, a genre, Planned, or Suggestions — to load tracks here.</p>"));
-    pLibraryWidget->registerView(kViewName, pEdit);
+    // The root view is the cockpit — currently the chat window (talks to the
+    // daemon over :7779). This is where the rest of the TUI gets ported in.
+    DlgDJTretaChat* pChat = new DlgDJTretaChat(pLibraryWidget);
+    pLibraryWidget->registerView(kViewName, pChat);
 }
 
 void DJTretaFeature::activate() {
