@@ -8,6 +8,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QTextBrowser>
 #include <QTimer>
 #include <QUrl>
@@ -25,12 +26,27 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
           m_pLog(new QTextBrowser(this)),
           m_pInput(new QLineEdit(this)),
           m_pPollTimer(new QTimer(this)),
-          m_base(kBase),
-          m_lastTurnCount(-1) {
+          m_base(kBase) {
     m_pLog->setOpenExternalLinks(false);
+    m_pLog->setFrameShape(QFrame::NoFrame);
     m_pInput->setPlaceholderText(tr("Talk to DJ Treta…  (e.g. \"energy badhao\")"));
 
     auto* pSend = new QPushButton(tr("Send"), this);
+
+    // Dark, themed chrome to match the LateNight skin (the bubbles themselves
+    // are themed in renderTurns).
+    setStyleSheet(QStringLiteral(
+            "QWidget { background: #161616; }"
+            "QTextBrowser { background: #161616; border: none; }"
+            "QLineEdit {"
+            "  background: #232323; color: #ECECEC; border: 1px solid #333;"
+            "  border-radius: 14px; padding: 7px 12px; font-size: 13px; }"
+            "QLineEdit:focus { border: 1px solid #2D6FE0; }"
+            "QPushButton {"
+            "  background: #2D6FE0; color: white; border: none;"
+            "  border-radius: 14px; padding: 7px 18px; font-weight: bold; }"
+            "QPushButton:hover { background: #3a82ff; }"
+            "QPushButton:pressed { background: #1f57b8; }"));
 
     auto* pInputRow = new QHBoxLayout();
     pInputRow->addWidget(m_pInput, 1);
@@ -70,10 +86,12 @@ void DlgDJTretaChat::sendMessage() {
     const QString url = m_base + QStringLiteral("/http/talk?msg=") +
             QString::fromUtf8(QUrl::toPercentEncoding(text));
     m_net.get(QNetworkRequest(QUrl(url)));
-    // Show the user's line immediately; the reply arrives on a later poll.
-    m_pLog->append(QStringLiteral("<b>You:</b> %1").arg(text.toHtmlEscaped()));
-    // Poll a touch sooner so the reply shows up quickly.
-    QTimer::singleShot(800, this, &DlgDJTretaChat::pollChat);
+    // Optimistic: show the message + a "typing…" bubble now. The daemon only
+    // writes the turn to the JSONL once Treta has replied, so we'd otherwise
+    // stare at nothing for several seconds.
+    m_pendingUserMsg = text;
+    rebuild();
+    QTimer::singleShot(1200, this, &DlgDJTretaChat::pollChat);
 }
 
 void DlgDJTretaChat::pollChat() {
@@ -90,28 +108,75 @@ void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
     }
 }
 
+namespace {
+QString bubbleHtml(bool mine, const QString& who, QString content) {
+    content = content.toHtmlEscaped();
+    content.replace(QStringLiteral("\n"), QStringLiteral("<br>"));
+    const QString align = mine ? QStringLiteral("right") : QStringLiteral("left");
+    const QString bg = mine ? QStringLiteral("#2D6FE0")    // accent blue
+                            : QStringLiteral("#26302B");   // dark green-grey
+    const QString nameColor = mine ? QStringLiteral("#BCD8FF")
+                                   : QStringLiteral("#85C85B");
+    return QStringLiteral(
+            "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
+            "<td align='%1'>"
+            "<table cellspacing='0' cellpadding='8' style='max-width:560px;'>"
+            "<tr><td bgcolor='%2' style='color:#F2F2F2; font-size:13px;'>"
+            "<span style='color:%3; font-weight:bold; font-size:11px;'>%4</span><br>%5"
+            "</td></tr></table></td></tr></table>"
+            "<table cellspacing='0' cellpadding='2'><tr><td>&nbsp;</td></tr></table>")
+            .arg(align, bg, nameColor, who, content);
+}
+} // anonymous namespace
+
 void DlgDJTretaChat::renderTurns(const QByteArray& json) {
     const QJsonDocument doc = QJsonDocument::fromJson(json);
     if (!doc.isObject()) {
         return;
     }
-    const QJsonArray turns = doc.object().value(QStringLiteral("turns")).toArray();
-    // Only re-render when the turn count changed, to avoid clobbering scroll
-    // and flicker on every poll.
-    if (turns.size() == m_lastTurnCount) {
+    m_turns = doc.object().value(QStringLiteral("turns")).toArray();
+
+    // If the server now reflects our pending message (the daemon writes the
+    // user+assistant turn together once Treta replies), drop the optimism.
+    if (!m_pendingUserMsg.isEmpty()) {
+        for (const QJsonValue& v : m_turns) {
+            const QJsonObject t = v.toObject();
+            if (t.value(QStringLiteral("role")).toString() == QStringLiteral("user") &&
+                    t.value(QStringLiteral("content")).toString() == m_pendingUserMsg) {
+                m_pendingUserMsg.clear();
+                break;
+            }
+        }
+    }
+    rebuild();
+}
+
+void DlgDJTretaChat::rebuild() {
+    // Dirty-check so periodic polls don't reset scroll / flicker when nothing
+    // changed.
+    const QString sig = QString::number(m_turns.size()) +
+            QStringLiteral("|") + m_pendingUserMsg;
+    if (sig == m_lastRenderSig) {
         return;
     }
-    m_lastTurnCount = turns.size();
+    m_lastRenderSig = sig;
 
-    m_pLog->clear();
-    for (const QJsonValue& v : turns) {
+    QString html = QStringLiteral(
+            "<html><body style='font-family:\"Open Sans\",sans-serif;'>");
+    for (const QJsonValue& v : m_turns) {
         const QJsonObject t = v.toObject();
-        const QString role = t.value(QStringLiteral("role")).toString();
-        const QString content = t.value(QStringLiteral("content")).toString();
-        const QString who = (role == QStringLiteral("user"))
-                ? QStringLiteral("You")
-                : QStringLiteral("DJ Treta");
-        m_pLog->append(QStringLiteral("<b>%1:</b> %2")
-                               .arg(who, content.toHtmlEscaped()));
+        const bool mine = t.value(QStringLiteral("role")).toString() ==
+                QStringLiteral("user");
+        html += bubbleHtml(mine,
+                mine ? tr("You") : tr("DJ Treta"),
+                t.value(QStringLiteral("content")).toString());
     }
+    if (!m_pendingUserMsg.isEmpty()) {
+        html += bubbleHtml(true, tr("You"), m_pendingUserMsg);
+        html += bubbleHtml(false, tr("DJ Treta"), QStringLiteral("…"));
+    }
+    html += QStringLiteral("</body></html>");
+
+    m_pLog->setHtml(html);
+    m_pLog->verticalScrollBar()->setValue(m_pLog->verticalScrollBar()->maximum());
 }
