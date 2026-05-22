@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLineEdit>
 #include <QStandardItem>
 #include <QStandardItemModel>
@@ -45,13 +46,16 @@ const SlashCmd kSlashCmds[] = {
 
 DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
         : QWidget(parent),
+          m_pStatus(new QLabel(this)),
           m_pLog(new QTextBrowser(this)),
           m_pInput(new QLineEdit(this)),
           m_pPollTimer(new QTimer(this)),
           m_base(kBase) {
+    m_pStatus->setTextFormat(Qt::RichText);
+    m_pStatus->setText(tr("DJ Treta — connecting…"));
     m_pLog->setOpenExternalLinks(false);
     m_pLog->setFrameShape(QFrame::NoFrame);
-    m_pInput->setPlaceholderText(tr("Talk to DJ Treta…  (e.g. \"energy badhao\")"));
+    m_pInput->setPlaceholderText(tr("Talk to DJ Treta…  (/ for commands)"));
 
     auto* pSend = new QPushButton(tr("Send"), this);
 
@@ -59,6 +63,8 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
     // are themed in renderTurns).
     setStyleSheet(QStringLiteral(
             "QWidget { background: #161616; }"
+            "QLabel { background: #1E1E1E; border: 1px solid #2A2A2A;"
+            "  border-radius: 8px; padding: 7px 12px; color: #ECECEC; }"
             "QTextBrowser { background: #161616; border: none; }"
             "QLineEdit {"
             "  background: #232323; color: #ECECEC; border: 1px solid #333;"
@@ -76,6 +82,8 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
 
     auto* pLayout = new QVBoxLayout(this);
     pLayout->setContentsMargins(8, 8, 8, 8);
+    pLayout->setSpacing(6);
+    pLayout->addWidget(m_pStatus, 0);
     pLayout->addWidget(m_pLog, 1);
     pLayout->addLayout(pInputRow, 0);
     setLayout(pLayout);
@@ -173,6 +181,7 @@ bool DlgDJTretaChat::handleSlashCommand(const QString& text) {
 void DlgDJTretaChat::pollChat() {
     m_net.get(QNetworkRequest(QUrl(m_base + QStringLiteral("/http/chat?n=40"))));
     m_net.get(QNetworkRequest(QUrl(m_base + QStringLiteral("/http/activity?n=60"))));
+    m_net.get(QNetworkRequest(QUrl(m_base + QStringLiteral("/http/state"))));
 }
 
 void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
@@ -189,7 +198,56 @@ void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
             m_activity = doc.object().value(QStringLiteral("activity")).toArray();
             rebuild();
         }
+    } else if (path == QStringLiteral("/http/state")) {
+        renderStatus(pReply->readAll());
     }
+}
+
+void DlgDJTretaChat::renderStatus(const QByteArray& json) {
+    const QJsonDocument doc = QJsonDocument::fromJson(json);
+    if (!doc.isObject()) {
+        return;
+    }
+    const QJsonObject d = doc.object();
+    const QJsonObject cur = d.value(QStringLiteral("current_track")).toObject();
+    const QJsonObject set = d.value(QStringLiteral("set")).toObject();
+
+    const bool playing = d.value(QStringLiteral("phase")).toString() ==
+            QStringLiteral("playing");
+    const QString dot = playing ? QStringLiteral("#85C85B") : QStringLiteral("#777");
+    const bool sarathi = d.value(QStringLiteral("sarathi_mode")).toBool();
+    const QString modeStr = sarathi ? tr("SARATHI") : tr("AUTO");
+    const QString modeColor = sarathi ? QStringLiteral("#E0A030") : QStringLiteral("#2D9CDB");
+
+    QString nowLine;
+    const QString title = cur.value(QStringLiteral("title")).toString();
+    if (!title.isEmpty()) {
+        const int bpm = cur.value(QStringLiteral("bpm")).toInt();
+        nowLine = QStringLiteral("<b style='color:#F2F2F2;'>%1</b>").arg(title.toHtmlEscaped());
+        if (bpm > 0) {
+            nowLine += QStringLiteral("  <span style='color:#9AC;'>%1 BPM</span>").arg(bpm);
+        }
+    } else {
+        nowLine = QStringLiteral("<span style='color:#888;'>nothing playing</span>");
+    }
+
+    QString setLine;
+    const QString setTitle = set.value(QStringLiteral("title")).toString();
+    if (!setTitle.isEmpty()) {
+        const int elapsed = set.value(QStringLiteral("elapsed")).toInt() / 60;
+        const int target = set.value(QStringLiteral("target_minutes")).toInt();
+        const QString mood = set.value(QStringLiteral("mood")).toString();
+        setLine = QStringLiteral(
+                "<span style='color:#999; font-size:11px;'>“%1” · %2 · %3/%4 min</span>")
+                          .arg(setTitle.toHtmlEscaped(), mood.toHtmlEscaped())
+                          .arg(elapsed)
+                          .arg(target);
+    }
+
+    m_pStatus->setText(QStringLiteral(
+            "<span style='color:%1;'>●</span> "
+            "<span style='color:%2; font-weight:bold; font-size:11px;'>%3</span>　%4<br>%5")
+            .arg(dot, modeColor, modeStr, nowLine, setLine));
 }
 
 namespace {

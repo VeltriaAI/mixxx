@@ -7,6 +7,7 @@
 
 #include "library/libraryview.h"
 
+class QLabel;
 class QTextBrowser;
 class QLineEdit;
 class QTimer;
@@ -35,11 +36,15 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
     void onReply(QNetworkReply* pReply);
 
   private:
+    void renderStatus(const QByteArray& json);  // top status strip from /http/state
+
+  private:
     void renderTurns(const QByteArray& json);
     void rebuild();  // render m_turns (+ optimistic pending bubble) into m_pLog
     void setupCommandCompleter();
     bool handleSlashCommand(const QString& text);  // true if handled as a command
 
+    QLabel* m_pStatus;
     QTextBrowser* m_pLog;
     QLineEdit* m_pInput;
     QCompleter* m_pCompleter;
