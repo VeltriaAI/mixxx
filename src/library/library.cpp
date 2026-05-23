@@ -84,6 +84,10 @@ Library::Library(
 
     // TODO(rryan) -- turn this construction / adding of features into a static
     // method or something -- CreateDefaultLibrary
+
+    // DJ Treta — AI co-founder's crate. Registered FIRST so it's the top item.
+    addFeature(new DJTretaFeature(this, m_pConfig, pRecordingManager));
+
     m_pMixxxLibraryFeature = make_parented<MixxxLibraryFeature>(
             this,
             m_pConfig);
@@ -146,9 +150,6 @@ Library::Library(
     addFeature(m_pBrowseFeature);
 
     addFeature(new RecordingFeature(this, m_pConfig, pRecordingManager));
-
-    // DJ Treta — AI co-founder's crate (sidebar feature, folder-backed).
-    addFeature(new DJTretaFeature(this, m_pConfig, pRecordingManager));
 
     addFeature(new SetlogFeature(this, UserSettingsPointer(m_pConfig)));
 

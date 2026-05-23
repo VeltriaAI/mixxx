@@ -61,26 +61,26 @@ DJTretaFeature::DJTretaFeature(
 void DJTretaFeature::buildSidebarTree() {
     std::unique_ptr<TreeItem> pRootItem = TreeItem::newRoot(this);
 
-    // All DJ Treta tracks (the library root).
-    pRootItem->appendChild(tr("Library"), m_musicDir);
+    // Library / Planned / Suggestions point at daemon-maintained symlink
+    // folders (_all / _planned / _suggestions) so Mixxx's folder browser shows
+    // them as track lists. The daemon keeps them in sync (browse_folders.py).
+    pRootItem->appendChild(tr("Library"), withTrailingSlash(m_musicDir + QStringLiteral("_all")));
 
-    // Genres — one child per genre subfolder. Selecting several = the
-    // multi-genre browse the FLX4 knob navigates.
+    // Genres — one child per real genre subfolder (skip dotfiles + the
+    // synthetic _-prefixed daemon folders).
     TreeItem* pGenres = pRootItem->appendChild(tr("Genres"), m_musicDir);
     const QFileInfoList genreDirs = QDir(m_musicDir).entryInfoList(
             QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
     for (const QFileInfo& dir : genreDirs) {
-        if (dir.fileName().startsWith('.')) {
+        const QString n = dir.fileName();
+        if (n.startsWith('.') || n.startsWith('_')) {
             continue;
         }
-        pGenres->appendChild(dir.fileName(), withTrailingSlash(dir.filePath()));
+        pGenres->appendChild(n, withTrailingSlash(dir.filePath()));
     }
 
-    // Planned + Suggestions are daemon-driven (the planner queue / Sarathi
-    // pick over :7779). Until their custom model lands they point at the
-    // library root so the nodes are present + browsable.
-    pRootItem->appendChild(tr("Planned"), m_musicDir);
-    pRootItem->appendChild(tr("Suggestions"), m_musicDir);
+    pRootItem->appendChild(tr("Planned"), withTrailingSlash(m_musicDir + QStringLiteral("_planned")));
+    pRootItem->appendChild(tr("Suggestions"), withTrailingSlash(m_musicDir + QStringLiteral("_suggestions")));
 
     m_pSidebarModel->setRootItem(std::move(pRootItem));
 }

@@ -48,9 +48,9 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
     bool handleSlashCommand(const QString& text);
     void sendCommand(const QString& cmd, const QString& extraQuery = QString());
     void appendActivityNote(const QString& html);
+    void appendChatAction(const QString& html);  // feedback line in the Chat tab
 
     void renderStatus(const QByteArray& json);
-    void renderAgents();
     void renderChat();
     void renderActivity();
     void renderSet();
@@ -61,7 +61,6 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
 
     // Top strips
     QLabel* m_pStatus;
-    QLabel* m_pAgents;
     // Tabs
     QTabWidget* m_pTabs;
     QTextBrowser* m_pChat;
@@ -83,6 +82,7 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
 
     // Polled state
     QJsonArray m_turns;
+    QJsonArray m_actionNotes;   // {ts, html} feedback lines for button/cmd actions
     QJsonArray m_activity;
     QJsonArray m_log;
     QJsonArray m_reflections;
