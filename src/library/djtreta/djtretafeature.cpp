@@ -2,9 +2,17 @@
 
 #include <QDir>
 #include <QFileInfoList>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QStandardPaths>
+#include <QTimer>
+#include <QUrl>
 
 #include "library/browse/foldertreemodel.h"
+#include "library/djtreta/djtretatrackmodel.h"
 #include "library/djtreta/dlgdjtretachat.h"
 #include "library/library.h"
 #include "library/trackcollectionmanager.h"
@@ -20,6 +28,13 @@ namespace {
 // Clicking the DJ Treta root shows the cockpit view (chat now; grows into the
 // full TUI dashboard). Child nodes (Library/Genres/...) show track tables.
 const QString kViewName = QStringLiteral("DJTreta");
+
+// Sentinel tree-item data for daemon-backed nodes (vs a real folder path).
+const QString kUpNextNode = QStringLiteral("djtreta://upnext");
+const QString kPlayedNode = QStringLiteral("djtreta://played");
+
+// Daemon-node refresh cadence (her queue / set history changes live).
+constexpr int kRefreshMs = 4000;
 
 QString withTrailingSlash(QString path) {
     if (!path.endsWith('/')) {
@@ -37,7 +52,10 @@ DJTretaFeature::DJTretaFeature(
           m_pTrackCollection(pLibrary->trackCollectionManager()->internalCollection()),
           m_browseModel(this, pLibrary->trackCollectionManager(), pRecordingManager),
           m_proxyModel(&m_browseModel, true),
-          m_pSidebarModel(new FolderTreeModel(this)) {
+          m_pSidebarModel(new FolderTreeModel(this)),
+          m_pTrackModel(new DJTretaTrackModel(
+                  this, pLibrary->trackCollectionManager())),
+          m_pRefreshTimer(new QTimer(this)) {
     connect(&m_browseModel,
             &BrowseTableModel::saveModelState,
             this,
@@ -52,6 +70,16 @@ DJTretaFeature::DJTretaFeature(
     m_proxyModel.setSortRole(Qt::UserRole);
     m_proxyModel.setDynamicSortFilter(true);
 
+    connect(&m_net,
+            &QNetworkAccessManager::finished,
+            this,
+            &DJTretaFeature::onDaemonReply);
+    m_pRefreshTimer->setInterval(kRefreshMs);
+    connect(m_pRefreshTimer,
+            &QTimer::timeout,
+            this,
+            &DJTretaFeature::refreshActiveDaemonNode);
+
     m_musicDir = withTrailingSlash(
             QDir::homePath() + QStringLiteral("/Music/DJTreta"));
 
@@ -61,9 +89,9 @@ DJTretaFeature::DJTretaFeature(
 void DJTretaFeature::buildSidebarTree() {
     std::unique_ptr<TreeItem> pRootItem = TreeItem::newRoot(this);
 
-    // Library / Planned / Suggestions point at daemon-maintained symlink
-    // folders (_all / _planned / _suggestions) so Mixxx's folder browser shows
-    // them as track lists. The daemon keeps them in sync (browse_folders.py).
+    // Library node = the _all symlink folder (every track). Folder nodes feed
+    // the library-backed track model (listed mp3s → resolved to library rows),
+    // so they show the full columns + Overview waveform.
     pRootItem->appendChild(tr("Library"), withTrailingSlash(m_musicDir + QStringLiteral("_all")));
 
     // Genres — one child per real genre subfolder (skip dotfiles + the
@@ -79,8 +107,10 @@ void DJTretaFeature::buildSidebarTree() {
         pGenres->appendChild(n, withTrailingSlash(dir.filePath()));
     }
 
-    pRootItem->appendChild(tr("Planned"), withTrailingSlash(m_musicDir + QStringLiteral("_planned")));
-    pRootItem->appendChild(tr("Suggestions"), withTrailingSlash(m_musicDir + QStringLiteral("_suggestions")));
+    // Daemon-backed nodes (live over :7779). Up Next = her ranked planner
+    // queue (load any row to pick/override); Played = this set's history.
+    pRootItem->appendChild(tr("Up Next"), kUpNextNode);
+    pRootItem->appendChild(tr("Played"), kPlayedNode);
 
     m_pSidebarModel->setRootItem(std::move(pRootItem));
 }
@@ -103,6 +133,9 @@ void DJTretaFeature::bindLibraryWidget(WLibrary* pLibraryWidget,
 }
 
 void DJTretaFeature::activate() {
+    // Root view = cockpit; no daemon table active, so stop polling.
+    m_activeDaemonRoute.clear();
+    m_pRefreshTimer->stop();
     emit switchToView(kViewName);
     emit enableCoverArtDisplay(false);
 }
@@ -115,20 +148,90 @@ void DJTretaFeature::activateChild(const QModelIndex& index) {
     if (!(pItem && pItem->getData().isValid())) {
         return;
     }
-    const QString path = pItem->getData().toString();
-    if (path.isEmpty()) {
+    const QString data = pItem->getData().toString();
+    if (data.isEmpty()) {
         return;
     }
-    auto dirInfo = mixxx::FileInfo(path);
-    auto dirAccess = mixxx::FileAccess(dirInfo);
-    if (!dirAccess.isReadable()) {
-        if (Sandbox::askForAccess(&dirInfo)) {
-            dirAccess = mixxx::FileAccess(dirInfo);
-        } else {
-            return;
+
+    emit saveModelState();
+
+    // Daemon-backed node: show the (shared) track model now and pull paths
+    // live; keep refreshing while this node is active.
+    if (data == kUpNextNode || data == kPlayedNode) {
+        m_activeDaemonRoute = (data == kUpNextNode)
+                ? QStringLiteral("/http/playlist")
+                : QStringLiteral("/http/tracklist");
+        emit showTrackModel(m_pTrackModel);
+        fetchDaemonTracks(m_activeDaemonRoute);
+        m_pRefreshTimer->start();
+        return;
+    }
+
+    // Folder node (Library / a genre): stop polling, list the folder's tracks
+    // and show them via the library-backed model (→ waveforms).
+    m_activeDaemonRoute.clear();
+    m_pRefreshTimer->stop();
+    m_pTrackModel->setTrackPaths(listFolderTracks(data));
+    emit showTrackModel(m_pTrackModel);
+}
+
+QStringList DJTretaFeature::listFolderTracks(const QString& dir) const {
+    QStringList out;
+    const QStringList nameFilters{
+            QStringLiteral("*.mp3"),
+            QStringLiteral("*.m4a"),
+            QStringLiteral("*.flac"),
+            QStringLiteral("*.wav"),
+            QStringLiteral("*.aiff"),
+            QStringLiteral("*.ogg"),
+            QStringLiteral("*.opus")};
+    const QFileInfoList files = QDir(dir).entryInfoList(
+            nameFilters, QDir::Files, QDir::Name);
+    for (const QFileInfo& fi : files) {
+        // Skip macOS AppleDouble sidecars (._foo.mp3) — 4 KB stubs.
+        if (fi.fileName().startsWith(QStringLiteral("._"))) {
+            continue;
+        }
+        // _all is a folder of symlinks → resolve to the real file so the
+        // library can match it; canonicalFilePath() follows symlinks.
+        const QString real = fi.canonicalFilePath();
+        out << (real.isEmpty() ? fi.absoluteFilePath() : real);
+    }
+    return out;
+}
+
+QString DJTretaFeature::daemonBase() const {
+    return QStringLiteral("http://localhost:7779");
+}
+
+void DJTretaFeature::fetchDaemonTracks(const QString& route) {
+    QNetworkRequest req{QUrl(daemonBase() + route)};
+    m_net.get(req);
+}
+
+void DJTretaFeature::refreshActiveDaemonNode() {
+    if (!m_activeDaemonRoute.isEmpty()) {
+        fetchDaemonTracks(m_activeDaemonRoute);
+    }
+}
+
+void DJTretaFeature::onDaemonReply(QNetworkReply* pReply) {
+    pReply->deleteLater();
+    if (pReply->error() != QNetworkReply::NoError) {
+        return;
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(pReply->readAll());
+    if (!doc.isObject()) {
+        return;
+    }
+    // Both /http/playlist and /http/tracklist return {"tracks":[{"path":...}]}.
+    QStringList paths;
+    const QJsonArray tracks = doc.object().value(QStringLiteral("tracks")).toArray();
+    for (const QJsonValue& v : tracks) {
+        const QString p = v.toObject().value(QStringLiteral("path")).toString();
+        if (!p.isEmpty()) {
+            paths << p;
         }
     }
-    emit saveModelState();
-    m_browseModel.setPath(std::move(dirAccess));
-    emit showTrackModel(&m_proxyModel);
+    m_pTrackModel->setTrackPaths(paths);
 }
