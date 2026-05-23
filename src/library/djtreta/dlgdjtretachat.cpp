@@ -500,10 +500,41 @@ void DlgDJTretaChat::renderStatus(const QByteArray&) {
                           .arg(cost, 0, 'f', 3);
     }
 
-    m_pStatus->setText(QStringLiteral(
+    // Up-next + her suggested transition, surfaced right in the status strip.
+    QString nextLine;
+    const QString nextTrack = d.value(QStringLiteral("next_track")).toObject()
+                                      .value(QStringLiteral("title")).toString();
+    if (!nextTrack.isEmpty()) {
+        nextLine += QStringLiteral(
+                "<span style='color:#7FB0E8; font-size:11px;'>↳ next: %1</span>")
+                            .arg(esc(nextTrack));
+    }
+    const QJsonObject sugg = d.value(QStringLiteral("pending_suggestion")).toObject();
+    if (!sugg.isEmpty()) {
+        const QString tech = sugg.value(QStringLiteral("technique")).toString()
+                                     .toUpper().replace('_', ' ');
+        const int toDeck = sugg.value(QStringLiteral("to_deck")).toInt();
+        const QString sTitle = sugg.value(QStringLiteral("track_title")).toString();
+        const QString reason = sugg.value(QStringLiteral("reason")).toString();
+        if (!nextLine.isEmpty()) {
+            nextLine += QStringLiteral("<span style='color:#444;'>　·　</span>");
+        }
+        nextLine += QStringLiteral(
+                "<span style='color:#85C85B; font-size:11px;'>✋ suggests %1 → deck %2</span>"
+                "<span style='color:#888; font-size:11px;'>%3%4</span>")
+                            .arg(tech).arg(toDeck)
+                            .arg(sTitle.isEmpty() ? QString() : QStringLiteral("  ·  ") + esc(sTitle),
+                                    reason.isEmpty() ? QString() : QStringLiteral("  —  ") + esc(reason));
+    }
+
+    QString html = QStringLiteral(
             "<span style='color:%1;'>●</span> "
             "<span style='color:%2; font-weight:bold; font-size:11px;'>%3</span>　%4%5<br>%6")
-            .arg(dot, modeColor, modeStr, now, billing, setLine));
+                            .arg(dot, modeColor, modeStr, now, billing, setLine);
+    if (!nextLine.isEmpty()) {
+        html += QStringLiteral("<br>%1").arg(nextLine);
+    }
+    m_pStatus->setText(html);
 }
 
 
