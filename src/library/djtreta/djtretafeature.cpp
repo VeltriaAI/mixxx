@@ -94,14 +94,25 @@ void DJTretaFeature::buildSidebarTree() {
     // so they show the full columns + Overview waveform.
     pRootItem->appendChild(tr("Library"), withTrailingSlash(m_musicDir + QStringLiteral("_all")));
 
-    // Genres — one child per real genre subfolder (skip dotfiles + the
-    // synthetic _-prefixed daemon folders).
+    // Genres — one child per real genre subfolder on disk. Skip dotfiles, the
+    // synthetic _-prefixed daemon folders (_all/_planned/_suggestions), and any
+    // folder that holds no audio (e.g. the "knowledge" LanceDB cache) — a genre
+    // is defined by containing tracks, so this stays correct as folders change.
+    static const QStringList kAudioFilters{
+            QStringLiteral("*.mp3"), QStringLiteral("*.m4a"),
+            QStringLiteral("*.flac"), QStringLiteral("*.wav"),
+            QStringLiteral("*.aiff"), QStringLiteral("*.ogg"),
+            QStringLiteral("*.opus")};
     TreeItem* pGenres = pRootItem->appendChild(tr("Genres"), m_musicDir);
     const QFileInfoList genreDirs = QDir(m_musicDir).entryInfoList(
             QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
     for (const QFileInfo& dir : genreDirs) {
         const QString n = dir.fileName();
         if (n.startsWith('.') || n.startsWith('_')) {
+            continue;
+        }
+        // Only list folders that actually contain audio (real genres).
+        if (QDir(dir.filePath()).entryList(kAudioFilters, QDir::Files).isEmpty()) {
             continue;
         }
         pGenres->appendChild(n, withTrailingSlash(dir.filePath()));
