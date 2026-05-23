@@ -160,7 +160,15 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
           m_pInput(new QLineEdit(this)),
           m_pPollTimer(new QTimer(this)) {
     m_pStatus->setTextFormat(Qt::RichText);
+    // Word-wrap the multi-line header. Without this the long section-timeline
+    // line (INTRO→BUILDUP→…) forces a huge minimum width on the whole cockpit,
+    // which pins the library sidebar splitter so it can't be widened.
+    m_pStatus->setWordWrap(true);
+    m_pStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
     m_pStatus->setText(tr("DJ Treta — connecting…"));
+
+    // Let the whole cockpit shrink so the sidebar splitter can give it space.
+    setMinimumWidth(220);
 
     const auto setupBrowser = [](QTextBrowser* b) {
         b->setOpenExternalLinks(false);
