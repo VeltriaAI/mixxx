@@ -78,6 +78,8 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
 
     QNetworkAccessManager m_net;
     QTimer* m_pPollTimer;
+    QTimer* m_pDotTimer;   // animates the "…" typing indicator while waiting
+    int m_dotPhase = 0;
 
     // Polled state
     QJsonArray m_turns;

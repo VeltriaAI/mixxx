@@ -14,6 +14,7 @@
 #include <QNetworkRequest>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QShortcut>
 #include <QStandardItem>
 #include <QStandardItemModel>
 #include <QTabWidget>
@@ -169,6 +170,8 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
     m_pTabs->addTab(m_pLibrary, tr("Library"));
     m_pTabs->addTab(m_pReflect, tr("Reflect"));
     m_pTabs->addTab(m_pIssues, tr("Issues"));
+    // Agent legend sits on the tab-bar row, right side (tabs left, agents right).
+    m_pTabs->setCornerWidget(m_pAgents, Qt::TopRightCorner);
 
     m_pInput->setPlaceholderText(tr("Talk to DJ Treta…  (/ for commands)"));
 
@@ -195,7 +198,6 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
     pLayout->setContentsMargins(8, 8, 8, 8);
     pLayout->setSpacing(6);
     pLayout->addWidget(m_pStatus, 0);
-    pLayout->addWidget(m_pAgents, 0);
     pLayout->addWidget(m_pTabs, 1);
     pLayout->addLayout(pInputRow, 0);
     setLayout(pLayout);
@@ -230,7 +232,39 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
     connect(m_pPollTimer, &QTimer::timeout, this, &DlgDJTretaChat::poll);
     connect(&m_net, &QNetworkAccessManager::finished, this, &DlgDJTretaChat::onReply);
 
+    // Animated "…" typing indicator (. / .. / ...) while awaiting a reply.
+    m_pDotTimer = new QTimer(this);
+    m_pDotTimer->setInterval(380);
+    connect(m_pDotTimer, &QTimer::timeout, this, [this] {
+        m_dotPhase = (m_dotPhase + 1) % 3;
+        m_sigChat.clear();  // force renderChat to repaint the dots
+        renderChat();
+    });
+
     setupCommandCompleter();
+
+    // Keyboard shortcuts — scoped to the cockpit (only fire when it has focus,
+    // so they don't hijack Mixxx's global hotkeys while DJing). On macOS Qt
+    // maps "Ctrl" to ⌘ Cmd. Chosen to avoid text-edit conflicts.
+    const auto addSc = [this](const QString& seq, void (DlgDJTretaChat::*slot)()) {
+        auto* sc = new QShortcut(QKeySequence(seq), this);
+        sc->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(sc, &QShortcut::activated, this, slot);
+    };
+    addSc(QStringLiteral("Ctrl+S"), &DlgDJTretaChat::onSkip);
+    addSc(QStringLiteral("Ctrl+L"), &DlgDJTretaChat::onLike);
+    addSc(QStringLiteral("Ctrl+G"), &DlgDJTretaChat::onDislike);
+    addSc(QStringLiteral("Ctrl+Return"), &DlgDJTretaChat::onDoIt);
+    addSc(QStringLiteral("Ctrl+Backspace"), &DlgDJTretaChat::onNo);
+    // Cmd+1..8 → switch tabs (browser-style, no edit conflict).
+    for (int i = 0; i < 8; ++i) {
+        auto* sc = new QShortcut(
+                QKeySequence(QStringLiteral("Ctrl+%1").arg(i + 1)), this);
+        sc->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(sc, &QShortcut::activated, this, [this, i] {
+            m_pTabs->setCurrentIndex(i);
+        });
+    }
 }
 
 void DlgDJTretaChat::setupCommandCompleter() {
@@ -525,8 +559,13 @@ void DlgDJTretaChat::renderChat() {
         html += it.second;
     }
     if (!m_pendingUserMsg.isEmpty()) {
+        if (!m_pDotTimer->isActive()) {
+            m_pDotTimer->start();
+        }
         html += bubbleHtml(true, tr("You"), m_pendingUserMsg);
-        html += bubbleHtml(false, tr("DJ Treta"), QStringLiteral("…"));
+        html += bubbleHtml(false, tr("DJ Treta"), QString(m_dotPhase + 1, QChar('.')));
+    } else if (m_pDotTimer->isActive()) {
+        m_pDotTimer->stop();
     }
     html += QStringLiteral("</body></html>");
     m_pChat->setHtml(html);
