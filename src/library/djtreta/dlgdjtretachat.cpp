@@ -49,6 +49,16 @@ QString esc(QString s) {
     return s.toHtmlEscaped();
 }
 
+// Seconds → "M:SS".
+QString fmtClock(int seconds) {
+    if (seconds < 0) {
+        seconds = 0;
+    }
+    return QStringLiteral("%1:%2")
+            .arg(seconds / 60)
+            .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+}
+
 QString bubbleHtml(bool mine, const QString& who, QString content) {
     content = esc(content);
     content.replace(QStringLiteral("\n"), QStringLiteral("<br>"));
@@ -460,81 +470,178 @@ void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
 
 void DlgDJTretaChat::renderStatus(const QByteArray&) {
     const QJsonObject d = m_lastState;
+    if (d.isEmpty()) {
+        m_pStatus->setText(QStringLiteral(
+                "<span style='color:#888;'>Brain offline — daemon not reachable</span>"));
+        return;
+    }
     const QJsonObject cur = d.value(QStringLiteral("current_track")).toObject();
     const QJsonObject set = d.value(QStringLiteral("set")).toObject();
-    const bool playing = d.value(QStringLiteral("phase")).toString() ==
-            QStringLiteral("playing");
-    const QString dot = playing ? QStringLiteral("#85C85B") : QStringLiteral("#777");
+    const QString phase = d.value(QStringLiteral("phase")).toString(QStringLiteral("idle"));
     const bool sarathi = d.value(QStringLiteral("sarathi_mode")).toBool();
-    const QString modeStr = sarathi ? tr("SARATHI") : tr("AUTO");
-    const QString modeColor = sarathi ? QStringLiteral("#E0A030") : QStringLiteral("#2D9CDB");
 
-    QString now;
-    const QString title = cur.value(QStringLiteral("title")).toString();
-    if (!title.isEmpty()) {
-        const int bpm = cur.value(QStringLiteral("bpm")).toInt();
-        now = QStringLiteral("<b style='color:#F2F2F2;'>%1</b>").arg(esc(title));
-        if (bpm > 0) {
-            now += QStringLiteral("  <span style='color:#9AC;'>%1 BPM</span>").arg(bpm);
-        }
-    } else {
-        now = QStringLiteral("<span style='color:#888;'>nothing playing</span>");
+    auto onoff = [](bool on) {
+        return on ? QStringLiteral("<span style='color:#85C85B;'>ON</span>")
+                  : QStringLiteral("<span style='color:#666;'>OFF</span>");
+    };
+    const QString sep = QStringLiteral(" <span style='color:#555;'>|</span> ");
+    QString pc = QStringLiteral("#777");
+    if (phase == QStringLiteral("playing")) {
+        pc = QStringLiteral("#85C85B");
+    } else if (phase == QStringLiteral("transitioning")) {
+        pc = QStringLiteral("#2D9CDB");
+    } else if (phase == QStringLiteral("preparing") || phase == QStringLiteral("starting")) {
+        pc = QStringLiteral("#E0A030");
+    } else if (phase == QStringLiteral("recovery")) {
+        pc = QStringLiteral("#E05050");
     }
 
-    QString setLine;
+    QStringList lines;
+
+    // ── Line 1: set info ──
+    const int tracksPlayed = d.value(QStringLiteral("tracks_played")).toInt();
+    const QJsonObject sources = d.value(QStringLiteral("sources")).toObject();
+    QStringList srcParts;
+    if (sources.value(QStringLiteral("youtube")).toBool()) {
+        srcParts << QStringLiteral("YT");
+    }
+    if (sources.value(QStringLiteral("treta_originals")).toBool()) {
+        srcParts << QStringLiteral("Originals");
+    }
+    const QString srcStr = srcParts.isEmpty() ? QStringLiteral("none") : srcParts.join('+');
     const QString setTitle = set.value(QStringLiteral("title")).toString();
     if (!setTitle.isEmpty()) {
-        const int elapsed = set.value(QStringLiteral("elapsed")).toInt() / 60;
-        const int target = set.value(QStringLiteral("target_minutes")).toInt();
-        const QString mood = set.value(QStringLiteral("mood")).toString();
-        setLine = QStringLiteral(
-                "<span style='color:#999; font-size:11px;'>“%1” · %2 · %3/%4 min</span>")
-                          .arg(esc(setTitle), esc(mood)).arg(elapsed).arg(target);
-    }
-
-    QString billing;
-    const double cost = m_billing.value(QStringLiteral("total_cost_usd")).toDouble();
-    if (cost > 0) {
-        billing = QStringLiteral(
-                "<span style='color:#666; font-size:11px;'>   ·   $%1</span>")
-                          .arg(cost, 0, 'f', 3);
-    }
-
-    // Up-next + her suggested transition, surfaced right in the status strip.
-    QString nextLine;
-    const QString nextTrack = d.value(QStringLiteral("next_track")).toObject()
-                                      .value(QStringLiteral("title")).toString();
-    if (!nextTrack.isEmpty()) {
-        nextLine += QStringLiteral(
-                "<span style='color:#7FB0E8; font-size:11px;'>↳ next: %1</span>")
-                            .arg(esc(nextTrack));
-    }
-    const QJsonObject sugg = d.value(QStringLiteral("pending_suggestion")).toObject();
-    if (!sugg.isEmpty()) {
-        const QString tech = sugg.value(QStringLiteral("technique")).toString()
-                                     .toUpper().replace('_', ' ');
-        const int toDeck = sugg.value(QStringLiteral("to_deck")).toInt();
-        const QString sTitle = sugg.value(QStringLiteral("track_title")).toString();
-        const QString reason = sugg.value(QStringLiteral("reason")).toString();
-        if (!nextLine.isEmpty()) {
-            nextLine += QStringLiteral("<span style='color:#444;'>　·　</span>");
+        const int num = set.value(QStringLiteral("number")).toInt();
+        QString genre = set.value(QStringLiteral("genre")).toString();
+        if (genre.isEmpty()) {
+            genre = set.value(QStringLiteral("mood")).toString();
         }
-        nextLine += QStringLiteral(
-                "<span style='color:#85C85B; font-size:11px;'>✋ suggests %1 → deck %2</span>"
-                "<span style='color:#888; font-size:11px;'>%3%4</span>")
-                            .arg(tech).arg(toDeck)
-                            .arg(sTitle.isEmpty() ? QString() : QStringLiteral("  ·  ") + esc(sTitle),
-                                    reason.isEmpty() ? QString() : QStringLiteral("  —  ") + esc(reason));
+        const int elapsed = set.value(QStringLiteral("elapsed")).toInt();
+        const int target = set.value(QStringLiteral("target_minutes")).toInt();
+        const QString setTime = target > 0
+                ? QStringLiteral("%1 / %2:00").arg(fmtClock(elapsed)).arg(target)
+                : fmtClock(elapsed);
+        lines << QStringLiteral(
+                "<span style='color:#888;'>SET #%1</span> "
+                "<b style='color:#F2F2F2;'>“%2”</b>%3"
+                "<span style='color:#C792EA;'>%4</span>%5"
+                "<span style='color:#AAA;'>%6</span>%7"
+                "<span style='color:#AAA;'>%8 tracks</span>%9"
+                "<span style='color:#C792EA;'>%10</span>")
+                         .arg(QString::number(num), esc(setTitle), sep, esc(genre), sep,
+                                 setTime, sep, QString::number(tracksPlayed), sep, srcStr);
+    } else {
+        lines << QStringLiteral(
+                "<span style='color:#888;'>No set active · mood %1 · %2 tracks</span>")
+                         .arg(esc(d.value(QStringLiteral("mood")).toString()),
+                                 QString::number(tracksPlayed));
     }
 
-    QString html = QStringLiteral(
-            "<span style='color:%1;'>●</span> "
-            "<span style='color:%2; font-weight:bold; font-size:11px;'>%3</span>　%4%5<br>%6")
-                            .arg(dot, modeColor, modeStr, now, billing, setLine);
-    if (!nextLine.isEmpty()) {
-        html += QStringLiteral("<br>%1").arg(nextLine);
+    // ── Line 2: status bar ──
+    const QString agentStr = d.value(QStringLiteral("agent_busy")).toBool()
+            ? QStringLiteral("<span style='color:#E0A030;'>THINKING</span>")
+            : QStringLiteral("<span style='color:#777;'>idle</span>");
+    const QString plStatus = d.value(QStringLiteral("planner_status")).toString(QStringLiteral("idle"));
+    const int plSince = d.value(QStringLiteral("planner_tracks_since")).toInt();
+    const QString plStr = (plStatus == QStringLiteral("busy"))
+            ? QStringLiteral("<span style='color:#E0A030;'>PLANNING</span>")
+            : QStringLiteral("<span style='color:#777;'>idle (%1 since)</span>").arg(plSince);
+    const int emerg = d.value(QStringLiteral("emergency_count")).toInt();
+    const QString emergStr = emerg > 0
+            ? QStringLiteral("<span style='color:#E05050;'>%1</span>").arg(emerg)
+            : QStringLiteral("<span style='color:#777;'>0</span>");
+    lines << QStringLiteral("<span style='color:%1;'>● %2</span>%3"
+                            "Agent: %4%5Planner: %6%7Relay: %8%9REC: %10")
+                          .arg(pc, phase.toUpper(), sep, agentStr, sep, plStr, sep,
+                                  onoff(d.value(QStringLiteral("relay_connected")).toBool()), sep,
+                                  onoff(d.value(QStringLiteral("recording")).toBool()))
+            + QStringLiteral("%1BCAST: %2%3Emerg: %4")
+                      .arg(sep, onoff(d.value(QStringLiteral("broadcasting")).toBool()), sep, emergStr);
+
+    // ── Line 3: now / next ──
+    QString nowNext;
+    const QString curTitle = cur.value(QStringLiteral("title")).toString();
+    if (!curTitle.isEmpty()) {
+        nowNext = QStringLiteral("<span style='color:#888;'>Now:</span> "
+                                 "<i style='color:#F2F2F2;'>%1</i>").arg(esc(curTitle));
+        const int bpm = cur.value(QStringLiteral("bpm")).toInt();
+        if (bpm > 0) {
+            nowNext += QStringLiteral(" <span style='color:#9AC;'>%1</span>").arg(bpm);
+        }
     }
-    m_pStatus->setText(html);
+    const QString nextTitle = d.value(QStringLiteral("next_track")).toObject()
+                                      .value(QStringLiteral("title")).toString();
+    if (!nextTitle.isEmpty()) {
+        if (!nowNext.isEmpty()) {
+            nowNext += QStringLiteral("　　");
+        }
+        nowNext += QStringLiteral("<span style='color:#888;'>Next:</span> "
+                                  "<i style='color:#7FB0E8;'>%1</i>").arg(esc(nextTitle));
+    }
+    if (!nowNext.isEmpty()) {
+        lines << nowNext;
+    }
+
+    // ── Line 4: Sarathi ──
+    if (sarathi) {
+        const QJsonObject sugg = d.value(QStringLiteral("pending_suggestion")).toObject();
+        if (!sugg.isEmpty()) {
+            const QString tech = sugg.value(QStringLiteral("technique")).toString()
+                                         .toUpper().replace('_', ' ');
+            const int toDeck = sugg.value(QStringLiteral("to_deck")).toInt();
+            const QString sTitle = sugg.value(QStringLiteral("track_title")).toString();
+            const QString reason = sugg.value(QStringLiteral("reason")).toString();
+            QString l = QStringLiteral(
+                    "<span style='color:#E0A030; font-weight:bold;'>✋ SARATHI</span> "
+                    "she suggests <b>%1 → deck %2</b>").arg(tech).arg(toDeck);
+            if (!sTitle.isEmpty()) {
+                l += QStringLiteral(" <span style='color:#7FB0E8;'>(%1)</span>").arg(esc(sTitle));
+            }
+            if (!reason.isEmpty()) {
+                l += QStringLiteral(" <span style='color:#888;'>— %1</span>").arg(esc(reason.left(70)));
+            }
+            lines << l;
+        } else {
+            lines << QStringLiteral(
+                    "<span style='color:#E0A030;'>✋ SARATHI</span> "
+                    "<span style='color:#777;'>you drive — no suggestion live</span>");
+        }
+    }
+
+    // ── Line 5: current-track section timeline (server-formatted, optional) ──
+    const QString timeline = cur.value(QStringLiteral("timeline_compact")).toString();
+    if (!timeline.isEmpty()) {
+        lines << QStringLiteral("<span style='color:#999; font-size:11px;'>%1</span>")
+                         .arg(esc(timeline));
+    }
+
+    // ── Line 6: billing ──
+    QJsonObject b = m_billing;
+    if (b.isEmpty()) {
+        b = d.value(QStringLiteral("billing")).toObject();
+    }
+    const double cost = b.value(QStringLiteral("total_cost_usd")).toDouble();
+    const int calls = b.value(QStringLiteral("calls")).toInt();
+    if (cost > 0 || calls > 0) {
+        const qint64 tok = static_cast<qint64>(b.value(QStringLiteral("total_input_tokens")).toDouble()) +
+                static_cast<qint64>(b.value(QStringLiteral("total_output_tokens")).toDouble());
+        const double sessStart = b.value(QStringLiteral("session_start")).toDouble();
+        double costHr = 0.0;
+        if (sessStart > 0) {
+            const double mins = (QDateTime::currentMSecsSinceEpoch() / 1000.0 - sessStart) / 60.0;
+            if (mins > 0) {
+                costHr = cost / mins * 60.0;
+            }
+        }
+        const QString tokStr = tok > 1000000
+                ? QStringLiteral("%1M").arg(tok / 1000000.0, 0, 'f', 1)
+                : QStringLiteral("%1K").arg(tok / 1000);
+        lines << QStringLiteral(
+                "<span style='color:#666; font-size:11px;'>$%1 | %2 tokens | %3 calls | $%4/hr</span>")
+                         .arg(cost, 0, 'f', 3).arg(tokStr).arg(calls).arg(costHr, 0, 'f', 3);
+    }
+
+    m_pStatus->setText(lines.join(QStringLiteral("<br>")));
 }
 
 
