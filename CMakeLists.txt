@@ -3754,6 +3754,7 @@ set(
   Sql
   Svg
   Test
+  WebSockets
   Widgets
   Xml
 )

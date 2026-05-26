@@ -23,6 +23,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWebSocket>
 
 #include "moc_dlgdjtretachat.cpp"
 
@@ -85,6 +86,19 @@ QString toolLineHtml(const QJsonObject& a) {
             "<div style='color:#7FB0E8; font-size:11px; margin:1px 0 1px 6px;'>"
             "🔧 %1(%2)</div>")
             .arg(esc(a.value(QStringLiteral("tool")).toString()), esc(args));
+}
+
+// Her reasoning while she works — dim/italic so it reads as inner thought,
+// distinct from the tool-call lines. (Streamed live over /ws/state.)
+QString thinkLineHtml(const QJsonObject& a) {
+    QString text = a.value(QStringLiteral("text")).toString();
+    if (text.size() > 240) {
+        text = text.left(237) + QStringLiteral("…");
+    }
+    return QStringLiteral(
+            "<div style='color:#8A9A8A; font-size:11px; font-style:italic; "
+            "margin:1px 0 1px 6px;'>💭 %1</div>")
+            .arg(esc(text));
 }
 
 // Block-char energy sparkline from a list of {e:energy(0-10)} objects.
@@ -158,7 +172,8 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
           m_pReflect(new QTextBrowser(this)),
           m_pIssues(new QTextBrowser(this)),
           m_pInput(new QLineEdit(this)),
-          m_pPollTimer(new QTimer(this)) {
+          m_pPollTimer(new QTimer(this)),
+          m_pWs(new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this)) {
     m_pStatus->setTextFormat(Qt::RichText);
     // Word-wrap the multi-line header. Without this the long section-timeline
     // line (INTRO→BUILDUP→…) forces a huge minimum width on the whole cockpit,
@@ -247,6 +262,13 @@ DlgDJTretaChat::DlgDJTretaChat(QWidget* parent)
     connect(m_pPollTimer, &QTimer::timeout, this, &DlgDJTretaChat::poll);
     connect(&m_net, &QNetworkAccessManager::finished, this, &DlgDJTretaChat::onReply);
 
+    // Live activity feed: subscribe to the daemon's push channel so thinking
+    // + tool calls stream in real time (same /ws/state the TUI uses), instead
+    // of the laggy HTTP poll. Localhost needs no token.
+    connect(m_pWs, &QWebSocket::connected, this, &DlgDJTretaChat::onWsConnected);
+    connect(m_pWs, &QWebSocket::textMessageReceived, this, &DlgDJTretaChat::onWsTextMessage);
+    connect(m_pWs, &QWebSocket::disconnected, this, &DlgDJTretaChat::onWsDisconnected);
+
     // Animated "…" typing indicator (. / .. / ...) while awaiting a reply.
     m_pDotTimer = new QTimer(this);
     m_pDotTimer->setInterval(380);
@@ -305,6 +327,7 @@ void DlgDJTretaChat::setupCommandCompleter() {
 void DlgDJTretaChat::onShow() {
     poll();
     m_pPollTimer->start(kPollMs);
+    connectWs();
 }
 
 bool DlgDJTretaChat::hasFocus() const {
@@ -414,11 +437,63 @@ void DlgDJTretaChat::appendActivityNote(const QString& html) {
 }
 
 void DlgDJTretaChat::poll() {
-    for (const char* path : {"/http/chat?n=40", "/http/activity?n=80",
+    // NOTE: /http/activity is intentionally absent — the activity feed
+    // (thinking + tool calls) now streams live over the WebSocket
+    // (onWsTextMessage), so polling it would clobber the live entries.
+    for (const char* path : {"/http/chat?n=40",
                  "/http/state", "/http/log?n=120", "/http/reflections",
                  "/http/tracklist", "/http/billing"}) {
         m_net.get(QNetworkRequest(QUrl(base() + QString::fromLatin1(path))));
     }
+}
+
+void DlgDJTretaChat::connectWs() {
+    if (!m_pWs) {
+        return;
+    }
+    const QAbstractSocket::SocketState st = m_pWs->state();
+    if (st == QAbstractSocket::ConnectedState || st == QAbstractSocket::ConnectingState) {
+        return;
+    }
+    m_pWs->open(QUrl(QStringLiteral("ws://127.0.0.1:7779/ws/state")));
+}
+
+void DlgDJTretaChat::onWsConnected() {
+    // The server replays its thinking ring on connect, so start fresh and let
+    // those replayed events rebuild the feed (avoids dupes with a stale poll).
+    m_activity = QJsonArray();
+}
+
+void DlgDJTretaChat::onWsTextMessage(const QString& message) {
+    const QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
+    if (!doc.isObject()) {
+        return;
+    }
+    const QJsonObject o = doc.object();
+    if (o.value(QStringLiteral("type")).toString() != QStringLiteral("event")) {
+        return;
+    }
+    if (o.value(QStringLiteral("event")).toString() != QStringLiteral("thinking")) {
+        return;
+    }
+    QJsonObject data = o.value(QStringLiteral("data")).toObject();
+    if (!data.contains(QStringLiteral("ts"))) {
+        data.insert(QStringLiteral("ts"),
+                QDateTime::currentMSecsSinceEpoch() / 1000.0);
+    }
+    QJsonArray arr = m_activity;
+    arr.append(data);
+    while (arr.size() > 200) {  // bound the feed
+        arr.removeFirst();
+    }
+    m_activity = arr;
+    renderChat();
+    renderActivity();
+}
+
+void DlgDJTretaChat::onWsDisconnected() {
+    // Reconnect with a short backoff so a daemon restart self-heals.
+    QTimer::singleShot(2000, this, &DlgDJTretaChat::connectWs);
 }
 
 void DlgDJTretaChat::onReply(QNetworkReply* pReply) {
@@ -676,10 +751,14 @@ void DlgDJTretaChat::renderChat() {
     }
     for (const QJsonValue& v : m_activity) {
         const QJsonObject a = v.toObject();
-        if (a.value(QStringLiteral("type")).toString() != QStringLiteral("call")) {
-            continue;
+        const QString t = a.value(QStringLiteral("type")).toString();
+        if (t == QStringLiteral("call")) {
+            items.emplace_back(a.value(QStringLiteral("ts")).toDouble(), toolLineHtml(a));
+        } else if (t == QStringLiteral("think")) {
+            // Show her reasoning inline too — "full tool calls + full thinking"
+            // while the user waits, streamed live over the WebSocket.
+            items.emplace_back(a.value(QStringLiteral("ts")).toDouble(), thinkLineHtml(a));
         }
-        items.emplace_back(a.value(QStringLiteral("ts")).toDouble(), toolLineHtml(a));
     }
     std::stable_sort(items.begin(), items.end(),
             [](const auto& x, const auto& y) { return x.first < y.first; });

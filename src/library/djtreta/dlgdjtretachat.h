@@ -15,6 +15,7 @@ class QLineEdit;
 class QTimer;
 class QNetworkReply;
 class QCompleter;
+class QWebSocket;
 
 // DJ Treta cockpit — the full brain inside Mixxx, native (no terminal/web
 // embed; Mixxx has neither). Layout: persistent status strip + agent row on
@@ -42,6 +43,11 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
     void onDislike();
     void onDoIt();
     void onNo();
+    // Live activity feed over WebSocket (replaces polling /http/activity).
+    void connectWs();
+    void onWsConnected();
+    void onWsTextMessage(const QString& message);
+    void onWsDisconnected();
 
   private:
     void setupCommandCompleter();
@@ -77,6 +83,7 @@ class DlgDJTretaChat : public QWidget, public virtual LibraryView {
 
     QNetworkAccessManager m_net;
     QTimer* m_pPollTimer;
+    QWebSocket* m_pWs;     // live push channel for thinking + tool calls
     QTimer* m_pDotTimer;   // animates the "…" typing indicator while waiting
     int m_dotPhase = 0;
 
