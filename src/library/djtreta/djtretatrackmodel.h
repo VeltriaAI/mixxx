@@ -28,4 +28,12 @@ class DJTretaTrackModel final : public BaseSqlTableModel {
     bool isColumnInternal(int column) override;
     Capabilities getCapabilities() const override;
     void select() override;
+
+  private:
+    // Cache of the last applied path list. setTrackPaths() short-circuits
+    // when the daemon's polling reply hasn't actually changed the rows —
+    // without this, every 4s refresh did a full beginResetModel via
+    // select(), wiping the user's selection and flickering the whole panel.
+    QStringList m_lastPaths;
+    bool m_pathsInitialized = false;
 };

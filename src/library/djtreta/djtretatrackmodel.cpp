@@ -22,6 +22,16 @@ DJTretaTrackModel::DJTretaTrackModel(QObject* parent,
 }
 
 void DJTretaTrackModel::setTrackPaths(const QStringList& paths) {
+    // Dedup: the feature re-polls the daemon every 4s and reapplies the path
+    // list unconditionally. When the daemon's reply hasn't actually changed
+    // the rows, doing the full DROP VIEW + CREATE VIEW + select() below
+    // triggers BaseSqlTableModel::select()'s beginResetModel/endResetModel,
+    // which wipes the user's selection and flickers the entire panel every
+    // 4s. Short-circuit when the incoming paths match the last applied set.
+    if (m_pathsInitialized && paths == m_lastPaths) {
+        return;
+    }
+
     // Resolve the supplied file paths to library track ids. Only tracks
     // already in the library resolve — that's intentional, it's what gives us
     // the analyzed columns + waveform.
@@ -70,6 +80,10 @@ void DJTretaTrackModel::setTrackPaths(const QStringList& paths) {
     setSearch("");
     setDefaultSort(fieldIndex("artist"), Qt::AscendingOrder);
     select();
+
+    // Remember what we just applied so the next identical reply short-circuits.
+    m_lastPaths = paths;
+    m_pathsInitialized = true;
 }
 
 bool DJTretaTrackModel::isColumnInternal(int column) {
